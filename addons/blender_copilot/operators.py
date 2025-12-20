@@ -3,8 +3,8 @@ import json
 import threading
 import urllib.request
 import os
-from . import executor  # 导入刚才写的执行器
-
+from . import executor
+from . import context_manager
 
 # 用于存储线程返回结果的临时容器
 class CopilotState:
@@ -61,12 +61,21 @@ class NODE_OT_SendPromptToLLM(bpy.types.Operator):
         state.generated_code = None
         state.error_message = None
 
+        # 获取当前材质树信息
+        current_tree_info = ""
+        if obj.active_material and obj.active_material.node_tree:
+            current_tree_info = context_manager.get_node_tree_context(obj.active_material.node_tree)
+            print("Context captured:")  # 调试用
+            print(current_tree_info)
+
         system_prompt = load_system_prompt("shader_system.txt")
+
+        full_user_prompt = f"{current_tree_info}\n\nUSER REQUEST: {user_input}"
 
         # --- 启动线程 (传入新的参数) ---
         thread = threading.Thread(
             target=self.thread_function,
-            args=(api_key, api_url, model_name,system_prompt, user_input)  # 传入 URL 和 Model
+            args=(api_key, api_url, model_name,system_prompt, full_user_prompt)  # 传入 URL 和 Model
         )
         thread.start()
 
@@ -139,9 +148,6 @@ class NODE_OT_SendPromptToLLM(bpy.types.Operator):
             from . import executor
             clean_code = executor.clean_code_string(state.generated_code)
 
-            # --- 🔍 修复重点在这里 ---
-            # 之前可能是: executor.execute_generated_code(clean_code, context)
-            # 现在必须传: state.target_material_name
             if state.target_material_name:
                 print(f"Executing Code on Material: {state.target_material_name}")
                 executor.execute_generated_code(clean_code, state.target_material_name)

@@ -31,12 +31,6 @@ class COPILOT_AddonPreferences(bpy.types.AddonPreferences):
         layout.prop(self, "model_name")
         layout.prop(self, "api_key")
 
-        # 加个简单的说明
-        layout.separator()
-        layout.label(text="Common Presets (Copy manually):", icon="INFO")
-        layout.label(text="DeepSeek: https://api.deepseek.com/chat/completions | deepseek-chat")
-        layout.label(text="Moonshot: https://api.moonshot.cn/v1/chat/completions | moonshot-v1-8k")
-
 
 def register():
     bpy.utils.register_class(COPILOT_AddonPreferences)

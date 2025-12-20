@@ -1,10 +1,10 @@
 bl_info = {
-    "name": "AI Node Copilot",
-    "author": "Your Name",
+    "name": "Blender Copilot",
+    "author": "Aentro",
     "version": (0, 0, 2),
-    "blender": (4, 0, 0),
+    "blender": (4, 2, 0),
     "location": "Shader Editor > N-Panel",
-    "description": "Prototype Week 1",
+    "description": "",
     "category": "Node",
 }
 
