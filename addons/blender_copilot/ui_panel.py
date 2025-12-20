@@ -35,11 +35,6 @@ class NODE_PT_CopilotPanel(bpy.types.Panel):
             # 显示发送按钮
             layout.operator("node.send_prompt_to_llm", text="Generate Nodes", icon="SHADING_RENDERED")
 
-        # --- 提示 ---
-        layout.separator()
-        layout.label(text="Tips:", icon="INFO")
-        layout.label(text="Try: 'Add a noise texture to roughness'")
-
 
 def register():
     bpy.utils.register_class(NODE_PT_CopilotPanel)

@@ -3,7 +3,6 @@ import json
 import threading
 import urllib.request
 import os
-from . import executor
 from . import context_manager
 
 # 用于存储线程返回结果的临时容器

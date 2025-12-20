@@ -1,20 +1,55 @@
-# blender_copilot
-让LLM帮你写蓝图！
+# Blender Copilot
 
-## 目前处于实验阶段，只支持着色器蓝图。
-类似这样，一键生成材质节点。
-![img.png](imgs/img.png)
-![img_2.png](imgs/img_2.png)
+**让 LLM 帮你写蓝图！**
+Blender Copilot 是一个基于大语言模型（LLM）的 Blender 插件，允许用户通过自然语言生成和修改 Shader（着色器）节点蓝图。
 
-同时也支持对于当前着色器节点进行修改
-![img.png](imgs/img_3.png)
+![封面图](imgs/img.png)
 
-不过说实话并不好用，现在还只是个玩具
+> ⚠️ **注意 / Note**
+> 目前本项目处于 **实验阶段 (Experimental)**。
+> 建议 Blender **4.2** 版本（由于 Principle BSDF 等节点的 API 在不同版本中存在差异，可能会导致生成失败）。
 
-## 使用
-安装插件，在插件设置中配置LLM的apikay后，在着色器编辑器右侧的面板输入提示词即可。
-![img_1.png](imgs/img_1.png)
+## ✨ 功能特性 (Features)
 
-同时建议搭配 node arrange 插件在生成后自动排布节点。
+- **文本生成节点**: 输入 "创建一个生锈的黄金材质"，自动生成节点网络。
+- **上下文感知修改**: 支持基于现有节点进行修改（例如："把刚才的纹理改得更粗糙一点"）。
+- **多模型支持**: 兼容 OpenAI 格式接口，支持 **DeepSeek** (推荐)、OpenAI、Kimi、本地 Ollama 等模型。
 
-此外，插件基于blender4.2开发，不同的版本可能造成调用接口的差异，导致无法正常生成节点。
+## 📸 效果展示 (Gallery)
+
+### 一键生成材质
+![生成示例1](imgs/img_2.png)
+
+### 基于现有节点修改
+通过读取当前节点树的上下文，AI 可以理解并修改现有的连接。
+![修改1](imgs/img_3.png)
+![修改2](imgs/img_4.png)
+
+## 🛠️ 安装与配置 (Installation)
+
+1. **下载**: 在 Releases 页面下载最新的 `.zip` 压缩包。
+2. **安装**: 打开 Blender -> `Edit` -> `Preferences` -> `Add-ons` -> `Install...`，选择压缩包安装。
+3. **配置**: 
+   - 在插件设置面板中，填入你的 LLM 配置。
+   - **配置示例 (DeepSeek)**:
+     - API URL: `https://api.deepseek.com/chat/completions`
+     - Model: `deepseek-chat`
+     - API Key: `sk-xxxx`
+
+## 🚀 使用方法 (Usage)
+
+1. 打开 **着色器编辑器 (Shader Editor)**。
+2. 按 `N` 键打开侧边栏，找到 **AI Copilot** 标签页。
+3. 在输入框中描述你想要的材质效果。
+4. 点击 **Generate**。
+
+![使用截图](imgs/img_1.png)
+
+## 💡 最佳实践与建议 (Tips)
+
+* **辅助插件**: 建议搭配 **Node Arrange** 插件使用。用于自动排版LLM生成出的节点。
+
+
+## 📄 License
+
+MIT License
