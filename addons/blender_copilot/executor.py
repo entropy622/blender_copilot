@@ -185,6 +185,26 @@ class MaterialGraphProgram:
         "ShaderNodeTexVoronoi": {"feature", "distance"},
     }
 
+    COMMON_NODE_NAME_TO_TYPES = {
+        "materialoutput": "ShaderNodeOutputMaterial",
+        "principledbsdf": "ShaderNodeBsdfPrincipled",
+        "diffusebsdf": "ShaderNodeBsdfDiffuse",
+        "glossybsdf": "ShaderNodeBsdfGlossy",
+        "emission": "ShaderNodeEmission",
+        "mixshader": "ShaderNodeMixShader",
+        "shadertorgb": "ShaderNodeShaderToRGB",
+        "colorramp": "ShaderNodeValToRGB",
+        "noisetexture": "ShaderNodeTexNoise",
+        "voronoitexture": "ShaderNodeTexVoronoi",
+        "bump": "ShaderNodeBump",
+        "fresnel": "ShaderNodeFresnel",
+        "layerweight": "ShaderNodeLayerWeight",
+        "mapping": "ShaderNodeMapping",
+        "texturecoordinate": "ShaderNodeTexCoord",
+        "rgb": "ShaderNodeRGB",
+        "value": "ShaderNodeValue",
+    }
+
     def __init__(self):
         self.node_specs: list[NodeSpec] = []
         self.links: list[LinkSpec] = []
@@ -454,6 +474,79 @@ def _resolve_socket_name(sockets, desired_name):
     raise GraphCodeValidationError(f"Socket '{desired_name}' was not found.")
 
 
+def _normalize_identifier(value):
+    return re.sub(r"[^a-z0-9]+", "", str(value).lower())
+
+
+def _resolve_existing_node(nodes, requested_name):
+    node = nodes.get(requested_name)
+    if node:
+        return node
+
+    normalized_requested = _normalize_identifier(requested_name)
+
+    for candidate in nodes:
+        if _normalize_identifier(candidate.name) == normalized_requested:
+            return candidate
+
+    expected_type = MaterialGraphProgram.COMMON_NODE_NAME_TO_TYPES.get(normalized_requested)
+    if expected_type:
+        typed_matches = [candidate for candidate in nodes if candidate.bl_idname == expected_type]
+        if len(typed_matches) == 1:
+            return typed_matches[0]
+
+    return None
+
+
+def _coerce_socket_value(socket, value):
+    if not hasattr(socket, "default_value"):
+        return value
+
+    current_value = socket.default_value
+
+    if value is None:
+        return current_value
+
+    if isinstance(current_value, float):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            raise GraphCodeValidationError(f"Socket '{socket.name}' expects a float-compatible value.")
+
+    if isinstance(current_value, int):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            raise GraphCodeValidationError(f"Socket '{socket.name}' expects an int-compatible value.")
+
+    try:
+        expected_len = len(current_value)
+    except TypeError:
+        return value
+
+    if not isinstance(value, (list, tuple)):
+        raise GraphCodeValidationError(f"Socket '{socket.name}' expects a sequence value.")
+
+    if len(value) != expected_len:
+        raise GraphCodeValidationError(
+            f"Socket '{socket.name}' expects a sequence of length {expected_len}, got {len(value)}."
+        )
+
+    coerced = []
+    for index, item in enumerate(value):
+        if item is None:
+            coerced.append(float(current_value[index]))
+        else:
+            try:
+                coerced.append(float(item))
+            except (TypeError, ValueError):
+                raise GraphCodeValidationError(
+                    f"Socket '{socket.name}' expects numeric sequence items; got {item!r}."
+                )
+
+    return tuple(coerced)
+
+
 def _apply_color_ramp(node, ramp_spec):
     if not ramp_spec:
         return
@@ -479,11 +572,11 @@ def _apply_spec_to_node(node_tree, node_cache, spec):
     nodes = node_tree.nodes
 
     if spec.mode == "existing":
-        node = nodes.get(spec.name or spec.alias)
+        node = _resolve_existing_node(nodes, spec.name or spec.alias)
         if not node:
             raise GraphCodeValidationError(f"Existing node '{spec.name or spec.alias}' was not found.")
     elif spec.mode == "ensure":
-        node = nodes.get(spec.name or spec.alias)
+        node = _resolve_existing_node(nodes, spec.name or spec.alias)
         if not node:
             node = nodes.new(spec.node_type)
     else:
@@ -506,7 +599,7 @@ def _apply_spec_to_node(node_tree, node_cache, spec):
         resolved_socket_name = _resolve_socket_name(node.inputs, socket_name)
         socket = node.inputs[resolved_socket_name]
         if hasattr(socket, "default_value"):
-            socket.default_value = value
+            socket.default_value = _coerce_socket_value(socket, value)
 
     if spec.node_type == "ShaderNodeValToRGB":
         _apply_color_ramp(node, spec.color_ramp)
