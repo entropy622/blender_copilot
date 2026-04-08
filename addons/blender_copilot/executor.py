@@ -1,41 +1,686 @@
-import bpy
+import ast
 import re
+from dataclasses import dataclass, field
 
 
 def clean_code_string(ai_response):
-    """
-    清洗 AI 回复，提取 Python 代码。
-    """
-    # 1. 标准模式：提取 ```python ... ``` 中间的内容
     pattern = r"```(?:python)?\s*(.*?)```"
     match = re.search(pattern, ai_response, re.DOTALL)
     if match:
         return match.group(1).strip()
-
-    # 2. 容错模式：AI 可能忘了写 markdown，但代码里肯定有 'node_tree'
-    # 如果回复里包含中文解释，直接执行会报错。
-    # 我们尝试只保留代码行 (简单过滤)
-    if "node_tree" in ai_response:
-        print("⚠️ Warning: No markdown blocks found. Trying to filter non-code lines.")
-        lines = ai_response.split('\n')
-        code_lines = []
-        for line in lines:
-            s_line = line.strip()
-            # 过滤掉明显的中文或非代码行
-            if not s_line: continue
-            if s_line.startswith("#"):
-                code_lines.append(line)
-                continue
-            # 简单的特征判断：包含 = ( ) . [ ] 等符号可能是代码
-            if any(c in s_line for c in "=().[]"):
-                code_lines.append(line)
-        return "\n".join(code_lines)
-
     return ai_response.strip()
 
 
+class GraphCodeValidationError(ValueError):
+    pass
+
+
+@dataclass
+class NodeHandle:
+    alias: str
+
+
+@dataclass
+class NodeSpec:
+    alias: str
+    node_type: str
+    name: str | None = None
+    label: str | None = None
+    location: tuple[float, float] | None = None
+    mode: str = "create"
+    input_values: dict[str, object] = field(default_factory=dict)
+    property_values: dict[str, object] = field(default_factory=dict)
+    color_ramp: dict[str, object] | None = None
+
+
+@dataclass
+class LinkSpec:
+    from_alias: str
+    from_socket: str
+    to_alias: str
+    to_socket: str
+
+
+class MaterialGraphProgram:
+    DEFAULT_LOCATIONS = {
+        "output": (420.0, 0.0),
+        "shader": (120.0, 0.0),
+        "convert": (-180.0, 0.0),
+        "texture": (-500.0, 0.0),
+        "input": (-780.0, 0.0),
+        "utility": (-140.0, -260.0),
+    }
+
+    NODE_KIND_BY_TYPE = {
+        "ShaderNodeOutputMaterial": "output",
+        "ShaderNodeBsdfPrincipled": "shader",
+        "ShaderNodeBsdfDiffuse": "shader",
+        "ShaderNodeBsdfGlossy": "shader",
+        "ShaderNodeEmission": "shader",
+        "ShaderNodeMixShader": "shader",
+        "ShaderNodeBsdfTransparent": "shader",
+        "ShaderNodeShaderToRGB": "convert",
+        "ShaderNodeValToRGB": "convert",
+        "ShaderNodeRGBCurve": "convert",
+        "ShaderNodeHueSaturation": "convert",
+        "ShaderNodeBump": "utility",
+        "ShaderNodeFresnel": "utility",
+        "ShaderNodeLayerWeight": "utility",
+        "ShaderNodeMath": "utility",
+        "ShaderNodeMixRGB": "utility",
+        "ShaderNodeTexNoise": "texture",
+        "ShaderNodeTexVoronoi": "texture",
+        "ShaderNodeTexCoord": "input",
+        "ShaderNodeMapping": "input",
+        "ShaderNodeRGB": "input",
+        "ShaderNodeValue": "input",
+    }
+
+    SOCKET_ALIASES = {
+        "ShaderNodeBsdfPrincipled": {
+            "base_color": "Base Color",
+            "metallic": "Metallic",
+            "roughness": "Roughness",
+            "ior": "IOR",
+            "alpha": "Alpha",
+            "normal": "Normal",
+            "coat_weight": "Coat Weight",
+            "coat_roughness": "Coat Roughness",
+            "emission_color": "Emission Color",
+            "emission_strength": "Emission Strength",
+            "transmission_weight": "Transmission Weight",
+            "specular_ior_level": "Specular IOR Level",
+        },
+        "ShaderNodeBsdfDiffuse": {
+            "color": "Color",
+            "roughness": "Roughness",
+            "normal": "Normal",
+        },
+        "ShaderNodeBsdfGlossy": {
+            "color": "Color",
+            "roughness": "Roughness",
+            "normal": "Normal",
+        },
+        "ShaderNodeEmission": {
+            "color": "Color",
+            "strength": "Strength",
+        },
+        "ShaderNodeMixShader": {
+            "factor": "Fac",
+            "fac": "Fac",
+            "shader_1": "Shader",
+            "shader_2": "Shader_001",
+        },
+        "ShaderNodeValToRGB": {
+            "factor": "Fac",
+            "fac": "Fac",
+        },
+        "ShaderNodeTexNoise": {
+            "vector": "Vector",
+            "scale": "Scale",
+            "detail": "Detail",
+            "roughness": "Roughness",
+            "distortion": "Distortion",
+        },
+        "ShaderNodeTexVoronoi": {
+            "vector": "Vector",
+            "scale": "Scale",
+            "randomness": "Randomness",
+        },
+        "ShaderNodeBump": {
+            "strength": "Strength",
+            "distance": "Distance",
+            "height": "Height",
+            "normal": "Normal",
+        },
+        "ShaderNodeFresnel": {
+            "ior": "IOR",
+            "normal": "Normal",
+        },
+        "ShaderNodeLayerWeight": {
+            "blend": "Blend",
+            "normal": "Normal",
+        },
+        "ShaderNodeMath": {
+            "value": "Value",
+            "value_1": "Value",
+            "value_2": "Value_001",
+        },
+        "ShaderNodeMixRGB": {
+            "factor": "Fac",
+            "fac": "Fac",
+            "color_1": "Color1",
+            "color_2": "Color2",
+        },
+        "ShaderNodeMapping": {
+            "vector": "Vector",
+            "location": "Location",
+            "rotation": "Rotation",
+            "scale": "Scale",
+        },
+        "ShaderNodeOutputMaterial": {
+            "surface": "Surface",
+            "volume": "Volume",
+            "displacement": "Displacement",
+        },
+        "ShaderNodeRGB": {
+            "color": "Color",
+        },
+        "ShaderNodeValue": {
+            "value": "Value",
+        },
+        "ShaderNodeShaderToRGB": {
+            "shader": "Shader",
+        },
+        "ShaderNodeBsdfTransparent": {
+            "color": "Color",
+        },
+    }
+
+    NODE_PROPERTIES = {
+        "ShaderNodeValToRGB": {"interpolation"},
+        "ShaderNodeMath": {"operation"},
+        "ShaderNodeMixRGB": {"blend_type"},
+        "ShaderNodeMapping": {"vector_type"},
+        "ShaderNodeTexVoronoi": {"feature", "distance"},
+    }
+
+    COMMON_NODE_NAME_TO_TYPES = {
+        "materialoutput": "ShaderNodeOutputMaterial",
+        "principledbsdf": "ShaderNodeBsdfPrincipled",
+        "diffusebsdf": "ShaderNodeBsdfDiffuse",
+        "glossybsdf": "ShaderNodeBsdfGlossy",
+        "emission": "ShaderNodeEmission",
+        "mixshader": "ShaderNodeMixShader",
+        "shadertorgb": "ShaderNodeShaderToRGB",
+        "colorramp": "ShaderNodeValToRGB",
+        "noisetexture": "ShaderNodeTexNoise",
+        "voronoitexture": "ShaderNodeTexVoronoi",
+        "bump": "ShaderNodeBump",
+        "fresnel": "ShaderNodeFresnel",
+        "layerweight": "ShaderNodeLayerWeight",
+        "mapping": "ShaderNodeMapping",
+        "texturecoordinate": "ShaderNodeTexCoord",
+        "rgb": "ShaderNodeRGB",
+        "value": "ShaderNodeValue",
+    }
+
+    def __init__(self):
+        self.node_specs: list[NodeSpec] = []
+        self.links: list[LinkSpec] = []
+        self.clear_requested = False
+        self._alias_counts: dict[str, int] = {}
+        self._layout_counts: dict[str, int] = {}
+        self._known_aliases: set[str] = set()
+
+    def reset_material(self):
+        self.clear_requested = True
+
+    def existing_node(self, name, alias=None):
+        alias = alias or self._make_alias(name)
+        spec = NodeSpec(alias=alias, node_type="", name=name, mode="existing")
+        self.node_specs.append(spec)
+        self._known_aliases.add(alias)
+        return NodeHandle(alias)
+
+    def node(self, node_type, alias=None, name=None, label=None, location=None, ensure=False, **kwargs):
+        alias = alias or self._make_alias(name or node_type)
+        mode = "ensure" if ensure else "create"
+        spec = NodeSpec(
+            alias=alias,
+            node_type=node_type,
+            name=name,
+            label=label,
+            location=self._normalize_location(location) if location is not None else None,
+            mode=mode,
+        )
+        self._apply_kwargs_to_spec(spec, kwargs)
+        self.node_specs.append(spec)
+        self._known_aliases.add(alias)
+        return NodeHandle(alias)
+
+    def ensure_node(self, node_type, name, alias=None, label=None, location=None, **kwargs):
+        return self.node(node_type, alias=alias, name=name, label=label, location=location, ensure=True, **kwargs)
+
+    def output_material(self, alias="output", name="Material Output", **kwargs):
+        return self.ensure_node("ShaderNodeOutputMaterial", name=name, alias=alias, **kwargs)
+
+    def principled_bsdf(self, alias="principled", name="Principled BSDF", **kwargs):
+        return self.ensure_node("ShaderNodeBsdfPrincipled", name=name, alias=alias, **kwargs)
+
+    def diffuse_bsdf(self, alias="diffuse", name="Diffuse BSDF", **kwargs):
+        return self.node("ShaderNodeBsdfDiffuse", alias=alias, name=name, **kwargs)
+
+    def glossy_bsdf(self, alias="glossy", name="Glossy BSDF", **kwargs):
+        return self.node("ShaderNodeBsdfGlossy", alias=alias, name=name, **kwargs)
+
+    def emission(self, alias="emission", name="Emission", **kwargs):
+        return self.node("ShaderNodeEmission", alias=alias, name=name, **kwargs)
+
+    def transparent_bsdf(self, alias="transparent", name="Transparent BSDF", **kwargs):
+        return self.node("ShaderNodeBsdfTransparent", alias=alias, name=name, **kwargs)
+
+    def mix_shader(self, alias="mix_shader", name="Mix Shader", **kwargs):
+        return self.node("ShaderNodeMixShader", alias=alias, name=name, **kwargs)
+
+    def shader_to_rgb(self, alias="shader_to_rgb", name="Shader to RGB", **kwargs):
+        return self.node("ShaderNodeShaderToRGB", alias=alias, name=name, **kwargs)
+
+    def color_ramp(self, alias="color_ramp", name="Color Ramp", stops=None, interpolation=None, **kwargs):
+        spec = NodeSpec(
+            alias=alias,
+            node_type="ShaderNodeValToRGB",
+            name=name,
+            mode="create",
+        )
+        if interpolation is not None:
+            spec.property_values["interpolation"] = interpolation
+        if stops is not None:
+            spec.color_ramp = {"stops": stops}
+        self._apply_kwargs_to_spec(spec, kwargs)
+        self.node_specs.append(spec)
+        self._known_aliases.add(alias)
+        return NodeHandle(alias)
+
+    def noise_texture(self, alias="noise", name="Noise Texture", **kwargs):
+        return self.node("ShaderNodeTexNoise", alias=alias, name=name, **kwargs)
+
+    def voronoi_texture(self, alias="voronoi", name="Voronoi Texture", **kwargs):
+        return self.node("ShaderNodeTexVoronoi", alias=alias, name=name, **kwargs)
+
+    def bump(self, alias="bump", name="Bump", **kwargs):
+        return self.node("ShaderNodeBump", alias=alias, name=name, **kwargs)
+
+    def fresnel(self, alias="fresnel", name="Fresnel", **kwargs):
+        return self.node("ShaderNodeFresnel", alias=alias, name=name, **kwargs)
+
+    def layer_weight(self, alias="layer_weight", name="Layer Weight", **kwargs):
+        return self.node("ShaderNodeLayerWeight", alias=alias, name=name, **kwargs)
+
+    def mix_rgb(self, alias="mix_rgb", name="Mix", **kwargs):
+        return self.node("ShaderNodeMixRGB", alias=alias, name=name, **kwargs)
+
+    def math(self, alias="math", name="Math", **kwargs):
+        return self.node("ShaderNodeMath", alias=alias, name=name, **kwargs)
+
+    def mapping(self, alias="mapping", name="Mapping", **kwargs):
+        return self.node("ShaderNodeMapping", alias=alias, name=name, **kwargs)
+
+    def texture_coordinate(self, alias="tex_coord", name="Texture Coordinate", **kwargs):
+        return self.node("ShaderNodeTexCoord", alias=alias, name=name, **kwargs)
+
+    def rgb(self, alias="rgb", name="RGB", **kwargs):
+        return self.node("ShaderNodeRGB", alias=alias, name=name, **kwargs)
+
+    def value(self, alias="value", name="Value", **kwargs):
+        return self.node("ShaderNodeValue", alias=alias, name=name, **kwargs)
+
+    def connect(self, from_node, from_socket, to_node, to_socket):
+        from_alias = self._coerce_alias(from_node)
+        to_alias = self._coerce_alias(to_node)
+        self.links.append(LinkSpec(from_alias, from_socket, to_alias, to_socket))
+
+    def set_input(self, node_handle, socket_name, value):
+        alias = self._coerce_alias(node_handle)
+        spec = self._get_or_create_patch_spec(alias)
+        spec.input_values[socket_name] = value
+
+    def set_property(self, node_handle, property_name, value):
+        alias = self._coerce_alias(node_handle)
+        spec = self._get_or_create_patch_spec(alias)
+        spec.property_values[property_name] = value
+
+    def _get_or_create_patch_spec(self, alias):
+        for spec in reversed(self.node_specs):
+            if spec.alias == alias:
+                return spec
+        spec = NodeSpec(alias=alias, node_type="", name=alias, mode="existing")
+        self.node_specs.append(spec)
+        return spec
+
+    def _apply_kwargs_to_spec(self, spec, kwargs):
+        for key, value in kwargs.items():
+            normalized = self._normalize_key(key)
+            if normalized == "location":
+                spec.location = self._normalize_location(value)
+                continue
+            if normalized == "label":
+                spec.label = value
+                continue
+            if normalized == "name":
+                spec.name = value
+                continue
+
+            property_names = self.NODE_PROPERTIES.get(spec.node_type, set())
+            if normalized in property_names:
+                spec.property_values[normalized] = value
+                continue
+
+            socket_name = self.SOCKET_ALIASES.get(spec.node_type, {}).get(normalized)
+            if socket_name is None:
+                socket_name = self._humanize_socket_name(key)
+            spec.input_values[socket_name] = value
+
+    def _normalize_key(self, value):
+        return str(value).strip().lower().replace(" ", "_")
+
+    def _humanize_socket_name(self, value):
+        parts = str(value).replace("-", "_").split("_")
+        return " ".join(part.capitalize() if part else part for part in parts)
+
+    def _normalize_location(self, value):
+        if not isinstance(value, (tuple, list)) or len(value) != 2:
+            raise GraphCodeValidationError("location must be a 2-item tuple/list.")
+        return (float(value[0]), float(value[1]))
+
+    def _make_alias(self, seed):
+        base = re.sub(r"[^a-zA-Z0-9_]+", "_", str(seed).strip().lower()).strip("_") or "node"
+        count = self._alias_counts.get(base, 0)
+        self._alias_counts[base] = count + 1
+        return base if count == 0 else f"{base}_{count}"
+
+    def _coerce_alias(self, node_ref):
+        if isinstance(node_ref, NodeHandle):
+            return node_ref.alias
+        if isinstance(node_ref, str):
+            return node_ref
+        raise GraphCodeValidationError("Node references must be a node handle or alias string.")
+
+    def ensure_locations(self):
+        for spec in self.node_specs:
+            if spec.location is not None:
+                continue
+            kind = self.NODE_KIND_BY_TYPE.get(spec.node_type, "utility")
+            x_pos, y_pos = self.DEFAULT_LOCATIONS.get(kind, self.DEFAULT_LOCATIONS["utility"])
+            index = self._layout_counts.get(kind, 0)
+            self._layout_counts[kind] = index + 1
+            spec.location = (x_pos, y_pos - index * 220.0)
+
+
+ALLOWED_AST_NODES = (
+    ast.Module,
+    ast.Assign,
+    ast.Expr,
+    ast.Call,
+    ast.Name,
+    ast.Load,
+    ast.Store,
+    ast.Constant,
+    ast.Tuple,
+    ast.List,
+    ast.Dict,
+    ast.keyword,
+    ast.UnaryOp,
+    ast.USub,
+)
+
+
+def _validate_graph_code(code_str):
+    try:
+        tree = ast.parse(code_str, mode="exec")
+    except SyntaxError as exc:
+        raise GraphCodeValidationError(f"Graph Code syntax error: {exc}") from exc
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ALLOWED_AST_NODES):
+            raise GraphCodeValidationError(f"Unsupported syntax in Graph Code: {type(node).__name__}")
+
+
+def _build_execution_env(program):
+    return {
+        "__builtins__": {},
+        "graph": program,
+        "ResetMaterial": program.reset_material,
+        "Existing": program.existing_node,
+        "Node": program.node,
+        "EnsureNode": program.ensure_node,
+        "OutputMaterial": program.output_material,
+        "PrincipledBSDF": program.principled_bsdf,
+        "DiffuseBSDF": program.diffuse_bsdf,
+        "GlossyBSDF": program.glossy_bsdf,
+        "Emission": program.emission,
+        "TransparentBSDF": program.transparent_bsdf,
+        "MixShader": program.mix_shader,
+        "ShaderToRGB": program.shader_to_rgb,
+        "ColorRamp": program.color_ramp,
+        "NoiseTexture": program.noise_texture,
+        "VoronoiTexture": program.voronoi_texture,
+        "Bump": program.bump,
+        "Fresnel": program.fresnel,
+        "LayerWeight": program.layer_weight,
+        "MixRGB": program.mix_rgb,
+        "Math": program.math,
+        "Mapping": program.mapping,
+        "TextureCoordinate": program.texture_coordinate,
+        "RGB": program.rgb,
+        "Value": program.value,
+        "Link": program.connect,
+        "SetInput": program.set_input,
+        "SetProperty": program.set_property,
+    }
+
+
+def _resolve_socket_name(sockets, desired_name):
+    socket = sockets.get(desired_name)
+    if socket:
+        return desired_name
+
+    normalized_desired = re.sub(r"[^a-z0-9]+", "", desired_name.lower())
+    for socket in sockets:
+        normalized_socket = re.sub(r"[^a-z0-9]+", "", socket.name.lower())
+        if normalized_socket == normalized_desired:
+            return socket.name
+
+    compatibility_aliases = {
+        "subsurface": ("Subsurface Weight", "Subsurface"),
+        "transmission": ("Transmission Weight", "Transmission"),
+        "coat": ("Coat Weight", "Coat"),
+        "sheen": ("Sheen Weight", "Sheen"),
+        "specular": ("Specular IOR Level", "Specular"),
+        "emission": ("Emission Color", "Emission"),
+    }
+    alias_candidates = compatibility_aliases.get(normalized_desired, ())
+    for candidate_name in alias_candidates:
+        socket = sockets.get(candidate_name)
+        if socket:
+            return candidate_name
+        normalized_candidate = re.sub(r"[^a-z0-9]+", "", candidate_name.lower())
+        for socket in sockets:
+            normalized_socket = re.sub(r"[^a-z0-9]+", "", socket.name.lower())
+            if normalized_socket == normalized_candidate:
+                return socket.name
+
+    raise GraphCodeValidationError(f"Socket '{desired_name}' was not found.")
+
+
+def _normalize_identifier(value):
+    return re.sub(r"[^a-z0-9]+", "", str(value).lower())
+
+
+def _resolve_existing_node(nodes, requested_name):
+    node = nodes.get(requested_name)
+    if node:
+        return node
+
+    normalized_requested = _normalize_identifier(requested_name)
+
+    for candidate in nodes:
+        if _normalize_identifier(candidate.name) == normalized_requested:
+            return candidate
+
+    expected_type = MaterialGraphProgram.COMMON_NODE_NAME_TO_TYPES.get(normalized_requested)
+    if expected_type:
+        typed_matches = [candidate for candidate in nodes if candidate.bl_idname == expected_type]
+        if len(typed_matches) == 1:
+            return typed_matches[0]
+
+    return None
+
+
+def _coerce_socket_value(socket, value):
+    if not hasattr(socket, "default_value"):
+        return value
+
+    current_value = socket.default_value
+
+    if value is None:
+        return current_value
+
+    if isinstance(current_value, float):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            raise GraphCodeValidationError(f"Socket '{socket.name}' expects a float-compatible value.")
+
+    if isinstance(current_value, int):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            raise GraphCodeValidationError(f"Socket '{socket.name}' expects an int-compatible value.")
+
+    try:
+        expected_len = len(current_value)
+    except TypeError:
+        return value
+
+    if not isinstance(value, (list, tuple)):
+        raise GraphCodeValidationError(f"Socket '{socket.name}' expects a sequence value.")
+
+    if len(value) != expected_len:
+        raise GraphCodeValidationError(
+            f"Socket '{socket.name}' expects a sequence of length {expected_len}, got {len(value)}."
+        )
+
+    coerced = []
+    for index, item in enumerate(value):
+        if item is None:
+            coerced.append(float(current_value[index]))
+        else:
+            try:
+                coerced.append(float(item))
+            except (TypeError, ValueError):
+                raise GraphCodeValidationError(
+                    f"Socket '{socket.name}' expects numeric sequence items; got {item!r}."
+                )
+
+    return tuple(coerced)
+
+
+def _apply_color_ramp(node, ramp_spec):
+    if not ramp_spec:
+        return
+
+    stops = ramp_spec.get("stops") or []
+    color_ramp = node.color_ramp
+
+    while len(color_ramp.elements) > 1:
+        color_ramp.elements.remove(color_ramp.elements[-1])
+
+    first_stop = stops[0] if stops else (0.0, (0.0, 0.0, 0.0, 1.0))
+    color_ramp.elements[0].position = float(first_stop[0])
+    color_ramp.elements[0].color = tuple(first_stop[1])
+
+    for position, color in stops[1:]:
+        element = color_ramp.elements.new(float(position))
+        element.color = tuple(color)
+
+
+def _set_writable_socket_value(sockets, socket_name, value):
+    try:
+        resolved_socket_name = _resolve_socket_name(sockets, socket_name)
+    except GraphCodeValidationError:
+        return False
+
+    socket = sockets[resolved_socket_name]
+    if hasattr(socket, "default_value"):
+        socket.default_value = _coerce_socket_value(socket, value)
+        return True
+    return False
+
+
+def _apply_spec_to_node(node_tree, node_cache, spec):
+    import bpy
+
+    nodes = node_tree.nodes
+
+    if spec.mode == "existing":
+        node = _resolve_existing_node(nodes, spec.name or spec.alias)
+        if not node:
+            raise GraphCodeValidationError(f"Existing node '{spec.name or spec.alias}' was not found.")
+    elif spec.mode == "ensure":
+        node = _resolve_existing_node(nodes, spec.name or spec.alias)
+        if not node:
+            node = nodes.new(spec.node_type)
+    else:
+        node = nodes.new(spec.node_type)
+
+    if spec.name:
+        node.name = spec.name
+    if spec.label is not None:
+        node.label = spec.label
+    if spec.location is not None:
+        node.location = spec.location
+
+    for property_name, value in spec.property_values.items():
+        if hasattr(node, property_name):
+            setattr(node, property_name, value)
+
+    for socket_name, value in spec.input_values.items():
+        if isinstance(value, NodeHandle):
+            continue
+        if _set_writable_socket_value(node.inputs, socket_name, value):
+            continue
+        if _set_writable_socket_value(node.outputs, socket_name, value):
+            continue
+        raise GraphCodeValidationError(
+            f"Socket '{socket_name}' was not found as a writable input or output on node '{node.name}'."
+        )
+
+    if spec.node_type == "ShaderNodeValToRGB":
+        _apply_color_ramp(node, spec.color_ramp)
+
+    node_cache[spec.alias] = node
+    return node
+
+
+def _apply_links(node_tree, node_cache, program):
+    links = node_tree.links
+
+    for spec in program.node_specs:
+        target_node = node_cache.get(spec.alias)
+        if not target_node:
+            continue
+        for socket_name, value in spec.input_values.items():
+            if not isinstance(value, NodeHandle):
+                continue
+            source_node = node_cache.get(value.alias)
+            if not source_node:
+                raise GraphCodeValidationError(f"Source node alias '{value.alias}' is missing.")
+
+            source_socket_name = source_node.outputs[0].name
+            target_socket_name = _resolve_socket_name(target_node.inputs, socket_name)
+            target_socket = target_node.inputs[target_socket_name]
+            for old_link in list(target_socket.links):
+                links.remove(old_link)
+            links.new(source_node.outputs[source_socket_name], target_socket)
+
+    for link_spec in program.links:
+        from_node = node_cache.get(link_spec.from_alias)
+        to_node = node_cache.get(link_spec.to_alias)
+        if not from_node or not to_node:
+            raise GraphCodeValidationError("A link references a missing node alias.")
+
+        from_socket_name = _resolve_socket_name(from_node.outputs, link_spec.from_socket)
+        to_socket_name = _resolve_socket_name(to_node.inputs, link_spec.to_socket)
+        target_socket = to_node.inputs[to_socket_name]
+        for old_link in list(target_socket.links):
+            links.remove(old_link)
+        links.new(from_node.outputs[from_socket_name], target_socket)
+
+
 def execute_generated_code(code_str, material_name):
-    # 1. 获取材质
+    import bpy
+
     material = bpy.data.materials.get(material_name)
     if not material:
         print(f"Error: Material '{material_name}' not found!")
@@ -44,65 +689,38 @@ def execute_generated_code(code_str, material_name):
     if not material.use_nodes:
         material.use_nodes = True
 
-    active_tree = material.node_tree
+    _validate_graph_code(code_str)
 
-    # 2. 准备沙盒环境
-    local_vars = {
-        "bpy": bpy,
-        "node_tree": active_tree,
-        "nodes": active_tree.nodes,
-        "links": active_tree.links,
-        # 注入一个空函数 set_val 避免 AI 如果用了以前的 Prompt 报错
-        "set_val": lambda n, s, v: None
-    }
+    program = MaterialGraphProgram()
+    execution_env = _build_execution_env(program)
 
     try:
-        print("Executing Code:"+code_str)
-        # 3. 执行 AI 代码
-        exec(code_str, globals(), local_vars)
+        exec(code_str, execution_env, {})
+    except Exception as exc:
+        print(f"Graph Code runtime error: {exc}")
+        import traceback
+        traceback.print_exc()
+        return False
 
-        # 4. 强制刷新数据
-        material.node_tree.nodes.update()
+    program.ensure_locations()
 
-        # 5. 尝试自动排版 (终极防崩溃版)
-        try:
-            target_window = None
-            target_area = None
-            target_region = None
+    node_tree = material.node_tree
+    nodes = node_tree.nodes
 
-            # 遍历所有窗口管理器里的窗口，而不是依赖 context.window
-            for window in bpy.context.window_manager.windows:
-                for area in window.screen.areas:
-                    if area.type == 'NODE_EDITOR':
-                        target_window = window
-                        target_area = area
-                        # 寻找内容区域
-                        for region in area.regions:
-                            if region.type == 'WINDOW':
-                                target_region = region
-                                break
-                        break
-                if target_area: break
+    if program.clear_requested:
+        nodes.clear()
 
-            if target_window and target_area and target_region:
-                # 上下文覆盖
-                with bpy.context.temp_override(window=target_window, area=target_area, region=target_region):
-                    # 必须先选中所有节点
-                    for n in active_tree.nodes:
-                        n.select = True
-                    bpy.ops.node.button_layout()
-                    print("✅ Auto-layout applied successfully.")
-            else:
-                print("ℹ️ Auto-layout skipped: Node Editor not visible (background execution).")
+    node_cache = {}
 
-        except Exception as layout_error:
-            # 这里的报错不应该影响结果，因为 AI 已经算过坐标了
-            print(f"⚠️ Layout Warning (Non-fatal): {layout_error}")
+    try:
+        for spec in program.node_specs:
+            _apply_spec_to_node(node_tree, node_cache, spec)
 
+        _apply_links(node_tree, node_cache, program)
+        node_tree.nodes.update()
         return True
-
-    except Exception as e:
-        print(f"❌ Execution Error: {e}")
+    except Exception as exc:
+        print(f"Graph Code execution error: {exc}")
         import traceback
         traceback.print_exc()
         return False

@@ -1,38 +1,42 @@
 import bpy
-from . import operators  # 导入 operators 以访问 state
+
+from . import material_graph_store
+from . import operators
 
 
 class NODE_PT_CopilotPanel(bpy.types.Panel):
     bl_label = "AI Copilot"
     bl_idname = "NODE_PT_copilot_main"
-    bl_space_type = 'NODE_EDITOR'
-    bl_region_type = 'UI'
+    bl_space_type = "NODE_EDITOR"
+    bl_region_type = "UI"
     bl_category = "AI Copilot"
 
     def draw(self, context):
         layout = self.layout
         scene = context.scene
-
-        # 引用全局状态
         is_thinking = operators.state.is_processing
 
-        # --- 输入区域 ---
         layout.label(text="Description:")
-        col = layout.column(align=True)
-        # 如果正在思考，禁用输入框
-        col.enabled = not is_thinking
-        col.prop(scene, "copilot_prompt_text", text="")
+        input_col = layout.column(align=True)
+        input_col.enabled = not is_thinking
+        input_col.prop(scene, "copilot_prompt_text", text="")
+
+        obj = context.active_object
+        if obj and obj.active_material:
+            material = obj.active_material
+            graph_path = material_graph_store.get_material_graph_path(material)
+            box = layout.box()
+            box.label(text=f"Material: {material.name}")
+            box.label(text="Graph Code File:")
+            box.label(text=graph_path)
 
         layout.separator()
 
-        # --- 按钮区域 ---
         if is_thinking:
-            # 显示加载状态
             row = layout.row(align=True)
-            row.enabled = False  # 按钮变灰
+            row.enabled = False
             row.label(text="AI is thinking...", icon="TIME")
         else:
-            # 显示发送按钮
             layout.operator("node.send_prompt_to_llm", text="Generate Nodes", icon="SHADING_RENDERED")
 
 

@@ -1,11 +1,13 @@
 import bpy
 import json
+import os
 import threading
 import urllib.request
-import os
-from . import context_manager
 
-# 用于存储线程返回结果的临时容器
+from . import context_manager
+from . import material_graph_store
+
+
 class CopilotState:
     is_processing = False
     generated_code = None
@@ -13,20 +15,27 @@ class CopilotState:
     target_material_name = ""
 
 
-# 全局状态实例
 state = CopilotState()
+
+
 def load_system_prompt(filename):
-    """从 prompts 文件夹读取文本"""
     try:
         current_dir = os.path.dirname(__file__)
         file_path = os.path.join(current_dir, "prompts", filename)
         if os.path.exists(file_path):
-            with open(file_path, 'r', encoding='utf-8') as f:
-                return f.read()
-    except Exception as e:
-        print(f"Error loading prompt: {e}")
-    # 备用 Prompt，防止文件读不到
-    return "You are a Blender Python expert. Write code to edit `node_tree`."
+            with open(file_path, "r", encoding="utf-8") as file:
+                return file.read()
+    except Exception as exc:
+        print(f"Error loading prompt: {exc}")
+    return "You are a Blender material assistant. Return Material Graph Code only."
+
+
+def _safe_report(operator, level, message):
+    try:
+        operator.report(level, message)
+    except ReferenceError:
+        print(f"Operator report skipped after reload: {message}")
+
 
 class NODE_OT_SendPromptToLLM(bpy.types.Operator):
     bl_idname = "node.send_prompt_to_llm"
@@ -36,125 +45,119 @@ class NODE_OT_SendPromptToLLM(bpy.types.Operator):
     def execute(self, context):
         user_input = context.scene.copilot_prompt_text
         if not user_input.strip():
-            self.report({'WARNING'}, "Prompt is empty")
-            return {'CANCELLED'}
+            _safe_report(self, {"WARNING"}, "Prompt is empty")
+            return {"CANCELLED"}
 
-        # --- 获取用户配置 ---
-        prefs = context.preferences.addons[__package__.split('.')[0]].preferences
+        prefs = context.preferences.addons[__package__.split(".")[0]].preferences
         api_key = prefs.api_key
-        api_url = prefs.api_url  # 获取自定义 URL
-        model_name = prefs.model_name  # 获取自定义模型名
+        api_url = prefs.api_url
+        model_name = prefs.model_name
 
         if not api_key:
-            self.report({'ERROR'}, "Please set API Key")
-            return {'CANCELLED'}
+            _safe_report(self, {"ERROR"}, "Please set API Key")
+            return {"CANCELLED"}
 
         obj = context.active_object
         if not obj or not obj.active_material:
-            self.report({'ERROR'}, "No active object or material selected!")
-            return {'CANCELLED'}
-        state.target_material_name = obj.active_material.name
+            _safe_report(self, {"ERROR"}, "No active object or material selected!")
+            return {"CANCELLED"}
 
-        # 重置状态
+        material = obj.active_material
+        material_graph_store.ensure_material_graph_file(material)
+
+        state.target_material_name = material.name
         state.is_processing = True
         state.generated_code = None
         state.error_message = None
 
-        # 获取当前材质树信息
-        current_tree_info = ""
-        if obj.active_material and obj.active_material.node_tree:
-            current_tree_info = context_manager.get_node_tree_context(obj.active_material.node_tree)
-            print("Context captured:")  # 调试用
-            print(current_tree_info)
+        current_context = context_manager.get_material_context(material)
+        print("Context captured:")
+        print(current_context)
 
         system_prompt = load_system_prompt("shader_system.txt")
+        full_user_prompt = f"{current_context}\n\nUSER REQUEST: {user_input}"
 
-        full_user_prompt = f"{current_tree_info}\n\nUSER REQUEST: {user_input}"
-
-        # --- 启动线程 (传入新的参数) ---
         thread = threading.Thread(
             target=self.thread_function,
-            args=(api_key, api_url, model_name,system_prompt, full_user_prompt)  # 传入 URL 和 Model
+            args=(api_key, api_url, model_name, system_prompt, full_user_prompt),
         )
         thread.start()
 
         bpy.app.timers.register(self.check_thread_result)
-        return {'FINISHED'}
+        return {"FINISHED"}
 
-    # 线程函数增加参数接收
     def thread_function(self, api_key, api_url, model_name, system_prompt, prompt):
         try:
-            # 强制忽略系统代理（解决国内访问 DeepSeek/OpenAI 有时被代理卡住的问题）
-            import os
-            os.environ['no_proxy'] = '*'
+            os.environ["no_proxy"] = "*"
 
-            # 如果用户只填了 https://api.deepseek.com，自动补全后缀
             if not api_url.endswith("/chat/completions"):
-                # 处理末尾斜杠
                 if api_url.endswith("/"):
                     api_url += "chat/completions"
                 elif api_url.endswith("/v1"):
                     api_url += "/chat/completions"
                 else:
-                    # 尝试猜测，大部分兼容接口是 /v1/chat/completions 或者直接 /chat/completions
-                    # 这里为了保险，直接补全标准的 OpenAI 格式后缀
                     api_url += "/chat/completions"
 
             headers = {
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}"
+                "Authorization": f"Bearer {api_key}",
             }
 
             payload = {
-                "model": model_name,  # 使用配置的模型名
+                "model": model_name,
                 "messages": [
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt}
+                    {"role": "user", "content": prompt},
                 ],
-                "temperature": 0.5,
-                "stream": False  # 确保不开启流式，方便一次性解析
+                "temperature": 0.2,
+                "stream": False,
             }
 
-            print("Sending to "+api_url)
-
-            # 使用配置的 URL
-            req = urllib.request.Request(api_url, data=json.dumps(payload).encode('utf-8'), headers=headers)
+            print("Sending to " + api_url)
+            req = urllib.request.Request(
+                api_url,
+                data=json.dumps(payload).encode("utf-8"),
+                headers=headers,
+            )
 
             with urllib.request.urlopen(req) as response:
-                result = json.loads(response.read().decode('utf-8'))
-                state.generated_code = result['choices'][0]['message']['content']
+                result = json.loads(response.read().decode("utf-8"))
+                state.generated_code = result["choices"][0]["message"]["content"]
+        except Exception as exc:
+            state.error_message = str(exc)
 
-        except Exception as e:
-            state.error_message = str(e)
-
-    # check_thread_result 函数保持不变...
     def check_thread_result(self):
-        # 1. 如果还在处理，或者没有结果，继续等待
         if state.generated_code is None and state.error_message is None:
-            return 0.1  # 0.1秒后再检查
+            return 0.1
 
-        # 2. 线程结束，停止等待状态
         state.is_processing = False
 
-        # 3. 处理错误
         if state.error_message:
             print(f"AI Error: {state.error_message}")
-            self.report({'ERROR'}, f"AI Error: {state.error_message}")  # 尝试在UI报错
+            _safe_report(self, {"ERROR"}, f"AI Error: {state.error_message}")
             return None
 
-            # 4. 处理成功结果
         if state.generated_code:
             from . import executor
+
             clean_code = executor.clean_code_string(state.generated_code)
 
             if state.target_material_name:
-                print(f"Executing Code on Material: {state.target_material_name}")
-                executor.execute_generated_code(clean_code, state.target_material_name)
+                print(f"Executing Graph Code on Material: {state.target_material_name}")
+                success = executor.execute_generated_code(clean_code, state.target_material_name)
+                if success:
+                    material = bpy.data.materials.get(state.target_material_name)
+                    if material:
+                        saved_path = material_graph_store.write_material_graph(material, clean_code)
+                        print(f"Saved Graph Code: {saved_path}")
+                else:
+                    material = bpy.data.materials.get(state.target_material_name)
+                    if material:
+                        draft_path = material_graph_store.write_material_graph_draft(material, clean_code)
+                        print(f"Saved failed Graph Code draft: {draft_path}")
+                    _safe_report(self, {"ERROR"}, "Graph Code execution failed. Script file was not updated.")
             else:
-                self.report({'ERROR'}, "Lost track of target material!")
-            # -----------------------
-
-        return None  # 停止 Timer
+                _safe_report(self, {"ERROR"}, "Lost track of target material!")
 
         return None
 
