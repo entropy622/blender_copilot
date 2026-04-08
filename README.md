@@ -61,6 +61,9 @@ MIT License
 
 生成蓝图时，插件会把当前蓝图抓换为 Graph Code 格式（类python 文件），保存在磁盘中。便于LLM去修改。修改完后，插件会把Graph Code再映射回蓝图。
 
+<img width="1712" height="1064" alt="image" src="https://github.com/user-attachments/assets/d9a59e6e-0e23-4e34-8937-6d032733aa47" />
+
+
 1. 用户在 Blender 的 Shader Editor 中选中当前材质并输入自然语言描述。
 2. 插件先为该材质绑定一个持久化的 Graph Code 文件；如果文件不存在，会自动创建一个初始 `.py` 文件。
 3. 插件收集当前材质上下文，包括主输出链、现有节点摘要、当前 Graph Code 文件路径和当前 Graph Code 内容。
