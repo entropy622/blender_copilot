@@ -14,10 +14,12 @@ from . import preferences
 from . import ui_panel
 from . import operators
 from . import executor
+from . import context_manager
 
 # 自动重载子模块 (开发必备)
 importlib.reload(preferences)
 importlib.reload(ui_panel)
+importlib.reload(context_manager)
 importlib.reload(operators)
 importlib.reload(executor)
 

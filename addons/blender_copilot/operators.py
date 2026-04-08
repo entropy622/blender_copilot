@@ -26,7 +26,7 @@ def load_system_prompt(filename):
     except Exception as e:
         print(f"Error loading prompt: {e}")
     # 备用 Prompt，防止文件读不到
-    return "You are a Blender Python expert. Write code to edit `node_tree`."
+    return "You are a Blender material assistant. Return Material Graph Code only."
 
 class NODE_OT_SendPromptToLLM(bpy.types.Operator):
     bl_idname = "node.send_prompt_to_llm"
@@ -111,7 +111,7 @@ class NODE_OT_SendPromptToLLM(bpy.types.Operator):
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt}
                 ],
-                "temperature": 0.5,
+                "temperature": 0.2,
                 "stream": False  # 确保不开启流式，方便一次性解析
             }
 
@@ -148,7 +148,7 @@ class NODE_OT_SendPromptToLLM(bpy.types.Operator):
             clean_code = executor.clean_code_string(state.generated_code)
 
             if state.target_material_name:
-                print(f"Executing Code on Material: {state.target_material_name}")
+                print(f"Executing Graph Code on Material: {state.target_material_name}")
                 executor.execute_generated_code(clean_code, state.target_material_name)
             else:
                 self.report({'ERROR'}, "Lost track of target material!")
