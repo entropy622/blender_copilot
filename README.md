@@ -70,3 +70,5 @@ MIT License
 7. Blender 中看到的节点树是运行结果，Graph Code 文件是可继续编辑、版本管理和回放的源码表示。
 
 Graph Code 语法说明见 [doc/material-graph-code.md](doc/material-graph-code.md)。
+
+这个思路参考自 https://github.com/AyayaXiaowang/Ayaya_Miliastra_Editor
