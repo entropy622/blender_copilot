@@ -56,3 +56,17 @@ https://github.com/user-attachments/assets/8a3fbff1-ee19-4a87-a3c0-83d6744830aa
 ## 📄 License
 
 MIT License
+
+## 蓝图生成链路
+
+生成蓝图时，插件会把当前蓝图抓换为 Graph Code 格式（类python 文件），保存在磁盘中。便于LLM去修改。修改完后，插件会把Graph Code再映射回蓝图。
+
+1. 用户在 Blender 的 Shader Editor 中选中当前材质并输入自然语言描述。
+2. 插件先为该材质绑定一个持久化的 Graph Code 文件；如果文件不存在，会自动创建一个初始 `.py` 文件。
+3. 插件收集当前材质上下文，包括主输出链、现有节点摘要、当前 Graph Code 文件路径和当前 Graph Code 内容。
+4. 这些上下文连同用户输入一起发送给 LLM，请它返回“完整更新后的 Material Graph Code”。
+5. 本地执行器会先校验这段 Graph Code 的语法和允许的调用，再把它编译成 Blender 材质节点、参数和连线。
+6. 执行成功后，新的 Graph Code 会写回持久化 `.py` 文件；执行失败时，会把失败版本保存为同目录下的 `.draft.py` 便于排查。
+7. Blender 中看到的节点树是运行结果，Graph Code 文件是可继续编辑、版本管理和回放的源码表示。
+
+Graph Code 语法说明见 [doc/material-graph-code.md](doc/material-graph-code.md)。
