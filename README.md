@@ -3,11 +3,14 @@
 **让 LLM 帮你写蓝图！**
 Blender Copilot 是一个基于大语言模型（LLM）的 Blender 插件，允许用户通过自然语言生成和修改 Shader（着色器）节点蓝图。
 
-![封面图](imgs/img.png)
+https://github.com/user-attachments/assets/8a3fbff1-ee19-4a87-a3c0-83d6744830aa
+
+<img width="2559" height="1491" alt="image" src="https://github.com/user-attachments/assets/12bc23ea-a463-43ad-a9ec-876dec358331" />
 
 > ⚠️ **注意 / Note**
+
 > 目前本项目处于 **实验阶段 (Experimental)**。
-> 建议 Blender **4.2** 版本（由于 Principle BSDF 等节点的 API 在不同版本中存在差异，可能会导致生成失败）。
+> 建议 Blender **4.2** 版本。
 
 ## ✨ 功能特性 (Features)
 
