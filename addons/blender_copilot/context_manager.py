@@ -1,3 +1,6 @@
+from . import material_graph_store
+
+
 def _format_value(value):
     try:
         if isinstance(value, float):
@@ -69,3 +72,20 @@ def get_node_tree_context(node_tree):
     lines.append('- Use Existing("Node Name") when editing current nodes.')
     lines.append('- Prefer concise Graph Code over direct bpy access.')
     return "\n".join(lines)
+
+
+def get_material_context(material):
+    lines = [
+        get_node_tree_context(material.node_tree if material and material.use_nodes else None),
+    ]
+
+    if material:
+        graph_path = material_graph_store.ensure_material_graph_file(material)
+        graph_code = material_graph_store.read_material_graph(material)
+        lines.append(f"CURRENT GRAPH CODE FILE: {graph_path}")
+        lines.append("CURRENT GRAPH CODE:")
+        lines.append("```python")
+        lines.append(graph_code.rstrip())
+        lines.append("```")
+
+    return "\n\n".join(lines)

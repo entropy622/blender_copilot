@@ -24,12 +24,22 @@ class COPILOT_AddonPreferences(bpy.types.AddonPreferences):
         default="gpt-4o-mini"
     )
 
+    graph_code_root: bpy.props.StringProperty(
+        name="Graph Code Root",
+        description="Optional directory for persistent Material Graph Code files. Leave blank to store beside the .blend file.",
+        subtype='DIR_PATH',
+        default=""
+    )
+
     def draw(self, context):
         layout = self.layout
         layout.label(text="LLM Settings:")
         layout.prop(self, "api_url")
         layout.prop(self, "model_name")
         layout.prop(self, "api_key")
+        layout.separator()
+        layout.label(text="Graph Code Storage:")
+        layout.prop(self, "graph_code_root")
 
 
 def register():

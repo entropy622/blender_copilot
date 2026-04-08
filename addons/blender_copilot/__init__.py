@@ -15,11 +15,13 @@ from . import ui_panel
 from . import operators
 from . import executor
 from . import context_manager
+from . import material_graph_store
 
 # 自动重载子模块 (开发必备)
 importlib.reload(preferences)
 importlib.reload(ui_panel)
 importlib.reload(context_manager)
+importlib.reload(material_graph_store)
 importlib.reload(operators)
 importlib.reload(executor)
 
@@ -36,6 +38,12 @@ def register():
         description="Describe what nodes you want",
         default="Create a red glass material"
     )
+    bpy.types.Material.copilot_graph_code_path = bpy.props.StringProperty(
+        name="Graph Code Path",
+        description="Persistent Material Graph Code file for this material",
+        subtype='FILE_PATH',
+        default=""
+    )
 
     print("AI Copilot V2 Registered")
 
@@ -46,6 +54,7 @@ def unregister():
     preferences.unregister()
 
     del bpy.types.Scene.copilot_prompt_text
+    del bpy.types.Material.copilot_graph_code_path
     print("AI Copilot Unregistered")
 
 

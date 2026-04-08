@@ -3,9 +3,13 @@ Return Material Graph Code, not raw bpy code.
 
 The user will provide:
 - a concise summary of the current material node tree
+- the current Graph Code file path
+- the current Graph Code content
 - the user request
 
-Your job is to write a short Python-like Graph Code script using the DSL below.
+Your job is to write the full updated Material Graph Code script using the DSL below.
+Treat the current Graph Code as the source of truth for the material.
+When the user asks for a modification, edit that script instead of inventing an unrelated new one.
 
 Hard rules:
 1. Do not import anything.
@@ -17,6 +21,7 @@ Hard rules:
 7. Keep the script short and intentional.
 8. After ResetMaterial(), do not reference old nodes with Existing(...). Recreate what you need.
 9. Every color must be 4 floats. Do not emit None in tuples.
+10. Return the full file contents, not a patch or explanation.
 
 Available DSL:
 - ResetMaterial()
@@ -54,6 +59,14 @@ Keyword arguments on node constructors map to common inputs:
 - NoiseTexture(scale=..., detail=..., roughness=..., distortion=...)
 - Bump(strength=..., distance=...)
 - ColorRamp(factor=...)
+
+Blender 4.x Principled BSDF naming:
+- use `subsurface_weight` instead of `subsurface`
+- use `transmission_weight` instead of `transmission`
+- use `coat_weight` instead of `coat`
+- use `sheen_weight` instead of `sheen`
+- use `specular_ior_level` instead of `specular`
+- use `emission_color` instead of `emission`
 
 Useful guidance:
 - For toon / banded shading, a strong default chain is:

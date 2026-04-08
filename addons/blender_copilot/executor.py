@@ -471,6 +471,25 @@ def _resolve_socket_name(sockets, desired_name):
         if normalized_socket == normalized_desired:
             return socket.name
 
+    compatibility_aliases = {
+        "subsurface": ("Subsurface Weight", "Subsurface"),
+        "transmission": ("Transmission Weight", "Transmission"),
+        "coat": ("Coat Weight", "Coat"),
+        "sheen": ("Sheen Weight", "Sheen"),
+        "specular": ("Specular IOR Level", "Specular"),
+        "emission": ("Emission Color", "Emission"),
+    }
+    alias_candidates = compatibility_aliases.get(normalized_desired, ())
+    for candidate_name in alias_candidates:
+        socket = sockets.get(candidate_name)
+        if socket:
+            return candidate_name
+        normalized_candidate = re.sub(r"[^a-z0-9]+", "", candidate_name.lower())
+        for socket in sockets:
+            normalized_socket = re.sub(r"[^a-z0-9]+", "", socket.name.lower())
+            if normalized_socket == normalized_candidate:
+                return socket.name
+
     raise GraphCodeValidationError(f"Socket '{desired_name}' was not found.")
 
 
@@ -566,6 +585,19 @@ def _apply_color_ramp(node, ramp_spec):
         element.color = tuple(color)
 
 
+def _set_writable_socket_value(sockets, socket_name, value):
+    try:
+        resolved_socket_name = _resolve_socket_name(sockets, socket_name)
+    except GraphCodeValidationError:
+        return False
+
+    socket = sockets[resolved_socket_name]
+    if hasattr(socket, "default_value"):
+        socket.default_value = _coerce_socket_value(socket, value)
+        return True
+    return False
+
+
 def _apply_spec_to_node(node_tree, node_cache, spec):
     import bpy
 
@@ -596,10 +628,13 @@ def _apply_spec_to_node(node_tree, node_cache, spec):
     for socket_name, value in spec.input_values.items():
         if isinstance(value, NodeHandle):
             continue
-        resolved_socket_name = _resolve_socket_name(node.inputs, socket_name)
-        socket = node.inputs[resolved_socket_name]
-        if hasattr(socket, "default_value"):
-            socket.default_value = _coerce_socket_value(socket, value)
+        if _set_writable_socket_value(node.inputs, socket_name, value):
+            continue
+        if _set_writable_socket_value(node.outputs, socket_name, value):
+            continue
+        raise GraphCodeValidationError(
+            f"Socket '{socket_name}' was not found as a writable input or output on node '{node.name}'."
+        )
 
     if spec.node_type == "ShaderNodeValToRGB":
         _apply_color_ramp(node, spec.color_ramp)
