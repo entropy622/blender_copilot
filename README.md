@@ -113,3 +113,7 @@ Graph Code 是受限 DSL，不执行任意 Python。完整语法见 [Graph Code 
 Graph Code 思路参考 [Ayaya_Miliastra_Editor](https://github.com/AyayaXiaowang/Ayaya_Miliastra_Editor)。
 
 [MIT License](LICENSE)
+
+## 材质生成对比测试
+
+使用独立的 GPT-5.6-sol 子代理，对比通用 Blender MCP 与 Blender Copilot 在同一风化铜材质目标下的耗时、token 用量、节点数和渲染效果。查看[简要测试报告](doc/benchmark.md)。
