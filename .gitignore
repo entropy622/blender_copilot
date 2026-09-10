@@ -1,3 +1,13 @@
 *.zip
 /Ayaya_Miliastra_Editor
 /addons/blender_copilot/_material_graphs
+
+__pycache__/
+*.py[cod]
+.venv*/
+*.egg-info/
+build/
+dist/
+.migration-backup/
+.test-output/
+/artifacts/

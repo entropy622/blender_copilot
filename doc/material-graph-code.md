@@ -1,258 +1,151 @@
-# Material Graph Code 语法说明
+# Material Graph Code · Blender 5.2
 
-本文说明 Blender Copilot 为材质蓝图生成和编辑所使用的 `Material Graph Code`。这类文件是持久化保存在磁盘上的 `.py` 文件，用来描述材质节点图；Blender 中的节点树是它编译执行后的结果。
+Graph Code 是外部 agent 与 Blender Shader 节点图之间的 Python 风格 DSL。通过 MCP 工具提交文本，不要用普通 Python 解释器运行这些文件。
 
-## 1. 文件角色
+## 读写流程
 
-- 每个材质会绑定一个 Graph Code 文件路径。
-- LLM 收到的是“当前材质上下文 + 当前 Graph Code 文件内容”。
-- LLM 返回的是“完整更新后的 Graph Code”，而不是局部 diff。
-- 执行成功后，新代码会覆盖原文件。
-- 执行失败时，会额外写出一个同路径的 `.draft.py` 草稿文件，方便排查。
+`get_material_graph(material_name)` 返回：
 
-## 2. 执行限制
+- `graph`：实时节点、socket 默认值、属性、布局、连接。
+- `code`：从实时图导出的 `Existing` 编辑脚本。
+- `revision`：用于提交时检查并发修改。
+- `source_code` / `source_path`：最后提交的磁盘源码及路径；没有源码时内容为 null。
 
-Graph Code 看起来像 Python，但它不是任意 Python 脚本。当前执行器只允许非常有限的语法：
+`validate_graph_code` 在临时副本上执行，验证后删除副本。通过后用 `apply_graph_code` 提交 `material_name`、`code` 和 `expected_revision`。只支持 Blender 5.2.x。
 
-- 允许：赋值语句、函数调用、字面量、列表、元组、字典、负号。
-- 不允许：`import`、`bpy`、函数定义、类定义、`if`、`for`、`while`、`with`、异常处理、推导式等通用 Python 语法。
-- 应该输出完整文件内容，而不是只输出一小段增量补丁。
+## 允许的语法
 
-可以把它理解为“Python 风格的材质节点 DSL”。
+允许赋值、DSL 函数调用、字符串、数值、布尔值、None、列表、元组、字典和负号。变量名不能以 `_` 开头或覆盖 DSL 函数名；节点 alias 必须唯一。
 
-## 3. 基本结构
+不允许 import、属性访问、bpy、函数/类定义、控制流、推导式、下标访问、参数展开及 DSL 之外的函数调用。不要包含 Markdown 代码围栏。代码大小上限为 1 MiB。
 
-一个最小可用文件通常长这样：
+## 创建和引用节点
 
 ```python
 ResetMaterial()
-
 output = OutputMaterial()
-surface = PrincipledBSDF(
-    alias="surface",
-    base_color=(0.8, 0.8, 0.8, 1.0),
-    roughness=0.5,
-)
+surface = PrincipledBSDF(base_color=(0.8, 0.4, 0.2, 1.0), roughness=0.4)
 Link(surface, "BSDF", output, "Surface")
 ```
 
-含义是：
+| 函数 | 行为 |
+| --- | --- |
+| `ResetMaterial()` | 清空目标图；修改已有材质时要求工具参数 `allow_reset=true` |
+| `Existing(name, alias=None, label=None, location=None)` | 引用已有节点；未指定布局时保留位置 |
+| `Node(node_type, alias=None, name=None, label=None, location=None, **kwargs)` | 创建节点 |
+| `EnsureNode(node_type, name, alias=None, label=None, location=None, **kwargs)` | 复用同名同类型节点，否则创建；类型冲突报错 |
+| `OutputMaterial(...)` | 确保材质输出节点存在 |
+| `PrincipledBSDF(...)` | 确保 Principled BSDF 节点存在 |
 
-- `ResetMaterial()`：清空当前材质节点树后再重建。
-- `OutputMaterial()`：确保存在材质输出节点。
-- `PrincipledBSDF(...)`：创建或确保主表面节点。
-- `Link(...)`：把 `BSDF` 输出连到 `Material Output.Surface`。
+`ResetMaterial` 是整份程序的重建标记，在应用节点之前执行。不要在同一程序中混用清空后已不存在的 `Existing` 引用。
 
-## 4. 顶层入口
+其他内置构造器默认每次创建节点：
 
-### 4.1 材质级操作
+- Shader：`DiffuseBSDF`、`GlossyBSDF`、`Emission`、`TransparentBSDF`、`MixShader`。
+- 转换与颜色：`ShaderToRGB`、`ColorRamp`、`MixRGB`、`Math`、`RGB`、`Value`。
+- 纹理与输入：`NoiseTexture`、`VoronoiTexture`、`TextureCoordinate`、`Mapping`。
+- 辅助：`Bump`、`Fresnel`、`LayerWeight`。
 
-- `ResetMaterial()`
-  - 清空当前材质节点树。
-  - 当用户明确要求“新建一个全新的材质”时使用。
+重复执行包含普通创建构造器的脚本可能累积节点。更新已有图用 `Existing` 或 `EnsureNode`；重建用 `ResetMaterial`。
 
-- `Existing("Node Name", alias="...")`
-  - 引用当前材质中已存在的节点。
-  - 常用于在不重建整张图的情况下修改现有节点。
-
-### 4.2 通用节点创建
-
-- `Node(node_type, alias=None, name=None, label=None, location=None, **kwargs)`
-  - 创建任意 Blender 节点。
-  - `node_type` 需要是 Blender 节点类型名，例如 `ShaderNodeMath`。
-
-- `EnsureNode(node_type, name, alias=None, label=None, location=None, **kwargs)`
-  - 如果同名节点已存在则复用，否则创建。
-
-## 5. 内置节点构造器
-
-为了减少 LLM 输出长度，执行器内置了一批常见材质节点的简写构造器。
-
-### 5.1 Shader 类
-
-- `OutputMaterial(...)`
-- `PrincipledBSDF(...)`
-- `DiffuseBSDF(...)`
-- `GlossyBSDF(...)`
-- `Emission(...)`
-- `TransparentBSDF(...)`
-- `MixShader(...)`
-
-### 5.2 转换与颜色类
-
-- `ShaderToRGB(...)`
-- `ColorRamp(...)`
-- `MixRGB(...)`
-- `Math(...)`
-- `RGB(...)`
-- `Value(...)`
-
-### 5.3 纹理与输入类
-
-- `NoiseTexture(...)`
-- `VoronoiTexture(...)`
-- `TextureCoordinate(...)`
-- `Mapping(...)`
-
-### 5.4 法线与辅助类
-
-- `Bump(...)`
-- `Fresnel(...)`
-- `LayerWeight(...)`
-
-这些构造器的返回值都可以继续作为变量传给 `Link(...)` 或 `SetInput(...)`。
-
-## 6. 节点引用与变量
-
-推荐把节点保存到变量里：
+## Socket 和属性
 
 ```python
-noise = NoiseTexture(scale=8.0, detail=3.0, alias="noise")
-ramp = ColorRamp(alias="mask", factor=noise)
-surface = PrincipledBSDF(alias="surface")
-SetInput(surface, "Base Color", ramp)
-```
-
-这里：
-
-- `noise`、`ramp`、`surface` 是 Graph Code 层面的变量。
-- `alias` 是节点在 Graph Code 内部的稳定标识，方便后续连接和修改。
-- `name` 是 Blender 节点树里显示的节点名。
-
-## 7. 参数规则
-
-大多数构造器都接受两类参数：
-
-- 节点输入参数：例如 `base_color`、`roughness`、`factor`、`strength`
-- 节点属性参数：例如 `ColorRamp(interpolation="CONSTANT")`、`MixRGB(blend_type="MULTIPLY")`
-
-执行器会尝试把关键字参数映射到对应输入 socket 或节点属性。
-
-### 7.1 常见值类型
-
-- 浮点数：`0.6`
-- 颜色：`(0.8, 0.4, 0.2, 1.0)`
-- 向量：`(0.0, 0.0, 1.0)`
-- 节点引用：`factor=noise`、`height=noise`
-
-如果某个参数传入的是另一个节点变量，执行器会自动尝试把这个节点的合适输出连过去。
-
-## 8. 连接与修改
-
-### 8.1 Link
-
-```python
-Link(surface, "BSDF", output, "Surface")
-Link(noise, "Fac", ramp, "Fac")
-```
-
-显式创建一条节点连线。
-
-### 8.2 SetInput
-
-```python
-SetInput(surface, "Base Color", (0.9, 0.7, 0.5, 1.0))
-SetInput(surface, "Roughness", 0.8)
-SetInput(surface, "Normal", bump)
-```
-
-用于修改一个节点的输入。第三个参数既可以是：
-
-- 直接值
-- 颜色/向量
-- 另一个节点变量
-
-### 8.3 SetProperty
-
-```python
-SetProperty(ramp, "interpolation", "CONSTANT")
-SetProperty(mix, "blend_type", "MULTIPLY")
-```
-
-用于修改节点本身的属性，而不是输入 socket。
-
-## 9. Blender 4.x 命名兼容
-
-`Principled BSDF` 在 Blender 4.x 有一些输入名和旧版本不同。建议优先使用 Blender 4.x 名称：
-
-- `Subsurface Weight`
-- `Transmission Weight`
-- `Coat Weight`
-- `Sheen Weight`
-- `Specular IOR Level`
-- `Emission Color`
-
-当前执行器也兼容一部分旧名，例如：
-
-- `Subsurface` -> `Subsurface Weight`
-- `Transmission` -> `Transmission Weight`
-- `Coat` -> `Coat Weight`
-- `Sheen` -> `Sheen Weight`
-- `Specular` -> `Specular IOR Level`
-- `Emission` -> `Emission Color`
-
-但文档和新代码应尽量直接使用新名称或对应的 snake_case 关键字，例如：
-
-- `subsurface_weight=0.0`
-- `transmission_weight=0.0`
-- `coat_weight=0.0`
-- `specular_ior_level=0.5`
-
-## 10. 示例
-
-### 10.1 重新生成一个基础 PBR 材质
-
-```python
-ResetMaterial()
-
-output = OutputMaterial()
-surface = PrincipledBSDF(
-    alias="surface",
-    base_color=(0.45, 0.35, 0.25, 1.0),
-    metallic=0.0,
-    roughness=0.75,
-    specular_ior_level=0.5,
-)
-Link(surface, "BSDF", output, "Surface")
-```
-
-### 10.2 生成一个简单的 toon 材质
-
-```python
-ResetMaterial()
-
-output = OutputMaterial()
-diffuse = DiffuseBSDF(color=(0.85, 0.35, 0.25, 1.0), roughness=1.0, alias="diffuse")
-to_rgb = ShaderToRGB(shader=diffuse, alias="to_rgb")
-ramp = ColorRamp(
-    alias="toon_ramp",
-    factor=to_rgb,
-    interpolation="CONSTANT",
-    stops=[
-        (0.0, (0.15, 0.05, 0.03, 1.0)),
-        (0.45, (0.15, 0.05, 0.03, 1.0)),
-        (0.46, (0.95, 0.55, 0.35, 1.0)),
-        (1.0, (0.95, 0.55, 0.35, 1.0)),
-    ],
-)
-surface = Emission(color=ramp, strength=1.0, alias="surface")
-Link(surface, "Emission", output, "Surface")
-```
-
-### 10.3 修改现有节点
-
-```python
-surface = Existing("Principled BSDF", alias="surface")
-
+surface = Existing("Principled BSDF")
+SetInput(surface, "Roughness", 0.6)
 SetInput(surface, "Base Color", (0.2, 0.35, 0.8, 1.0))
-SetInput(surface, "Roughness", 0.25)
-SetInput(surface, "Metallic", 0.9)
 ```
 
-## 11. 编写建议
+socket 可以用唯一名称、identifier 或从 0 开始的整数 index。Blender 的 Math、Mix 等节点有重名 socket；重名名称会报错，须用 identifier 或 index：
 
-- 需要重建整张图时再使用 `ResetMaterial()`。
-- 只修改现有图时，优先使用 `Existing(...)`。
-- 优先使用内置构造器，不要直接写 `bpy`。
-- 每次返回完整文件内容，避免只返回片段。
-- 尽量保证最终有一条有效链路连到 `Material Output.Surface`。
+```python
+multiply = Math(operation="MULTIPLY")
+SetInput(multiply, 0, 2.0)
+SetInput(multiply, 1, 3.0)
+```
+
+`SetInput` 设置字面量时断开该输入的已有连接。传节点变量则连接其第一个输出。精确指定来源 socket 应用 `Link`：
+
+```python
+noise = NoiseTexture(scale=8.0)
+surface = PrincipledBSDF()
+Link(noise, "Fac", surface, "Roughness")
+```
+
+`Link(from_node, from_socket, to_node, to_socket)` 会替换目标输入的旧连接。
+
+修改 Value、RGB 等节点的可写输出用 `SetOutput`：
+
+```python
+value = Value(value=0.5)
+SetOutput(value, 0, 0.8)
+color = RGB(color=(0.2, 0.3, 0.4, 1.0))
+```
+
+`SetProperty(node, property_name, value)` 设置 Blender 可写标量/数组/枚举属性。无效或不支持的属性会报错。设置影响 socket 布局的属性在默认值和连线之前执行。
+
+```python
+noise = NoiseTexture()
+SetProperty(noise, "noise_dimensions", "4D")
+SetInput(noise, "W", 0.3)
+```
+
+常见关键字如 `base_color`、`roughness`、`metallic`、`transmission_weight`、`specular_ior_level` 映射到 Blender 5.2 输入名。其他类型先通过 `get_node_schema` 查看当前版本，避免猜测旧版节点接口。
+
+## 颜色渐变
+
+```python
+ramp = ColorRamp(
+    stops=[
+        (0.0, (0.05, 0.02, 0.01, 1.0)),
+        (0.5, (0.6, 0.2, 0.05, 1.0)),
+        (1.0, (1.0, 0.8, 0.4, 1.0)),
+    ],
+    interpolation="CONSTANT",
+)
+```
+
+修改已有渐变：
+
+```python
+ramp = Existing("Color Ramp")
+SetColorRamp(
+    ramp,
+    [(0.0, (0.0, 0.0, 0.0, 1.0)), (1.0, (1.0, 1.0, 1.0, 1.0))],
+    interpolation="LINEAR",
+    color_mode="RGB",
+    hue_interpolation="NEAR",
+)
+```
+
+`SetProperty(ramp, "interpolation", "CONSTANT")` 也支持。
+
+## 节点组与图像
+
+读取现有图后，直接修改节点组暴露的输入；组内部不会展开或重建：
+
+```python
+group = Existing("My Shader Group")
+SetInput(group, "Roughness", 0.4)
+```
+
+从零创建时，可以引用当前 `.blend` 中已经存在的资源：
+
+```python
+group = Node("ShaderNodeGroup")
+SetProperty(group, "node_tree", "MyShaderGroup")
+image = Node("ShaderNodeTexImage")
+SetProperty(image, "image", "albedo.png")
+```
+
+这是数据块名称，不是磁盘路径；工具不会自动下载或加载资源。
+
+## 导出与持久化限制
+
+实时导出的 `Existing` 脚本保留现有节点身份，可编辑默认值、属性、布局和顶层连接，也能保存颜色渐变。它依赖已有图，不是包含所有 Blender 状态的独立资产备份；节点组内部、动画/驱动、外部图像和其他复杂节点内部数据不序列化。
+
+对于工具从零创建的材质，保留完整构造代码可重建相应节点图。仅提交局部修改时，磁盘文件记录该修改脚本；后续以实时导出为编辑起点。
+
+应用预检失败会保留原材质和原源码，同时尝试保存 `<source>.draft.py`。文件写入使用临时文件替换；插件不自动保存 `.blend`，也不提供 Blender 操作符 Undo 入口。预检后的提交不是跨文件系统的事务，发生提交异常时应读取实时图确认状态。
+
+源码目录和 MCP 安装方式见 [README](../README.md)。

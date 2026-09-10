@@ -29,6 +29,7 @@ class NodeSpec:
     location: tuple[float, float] | None = None
     mode: str = "create"
     input_values: dict[str, object] = field(default_factory=dict)
+    output_values: dict[str, object] = field(default_factory=dict)
     property_values: dict[str, object] = field(default_factory=dict)
     color_ramp: dict[str, object] | None = None
 
@@ -216,9 +217,10 @@ class MaterialGraphProgram:
     def reset_material(self):
         self.clear_requested = True
 
-    def existing_node(self, name, alias=None):
+    def existing_node(self, name, alias=None, label=None, location=None):
         alias = alias or self._make_alias(name)
-        spec = NodeSpec(alias=alias, node_type="", name=name, mode="existing")
+        spec = NodeSpec(alias=alias, node_type="", name=name, mode="existing", label=label,
+                        location=self._normalize_location(location) if location is not None else None)
         self.node_specs.append(spec)
         self._known_aliases.add(alias)
         return NodeHandle(alias)
@@ -310,10 +312,18 @@ class MaterialGraphProgram:
         return self.node("ShaderNodeTexCoord", alias=alias, name=name, **kwargs)
 
     def rgb(self, alias="rgb", name="RGB", **kwargs):
-        return self.node("ShaderNodeRGB", alias=alias, name=name, **kwargs)
+        color = kwargs.pop("color", None)
+        handle = self.node("ShaderNodeRGB", alias=alias, name=name, **kwargs)
+        if color is not None:
+            self.set_output(handle, 0, color)
+        return handle
 
     def value(self, alias="value", name="Value", **kwargs):
-        return self.node("ShaderNodeValue", alias=alias, name=name, **kwargs)
+        value = kwargs.pop("value", None)
+        handle = self.node("ShaderNodeValue", alias=alias, name=name, **kwargs)
+        if value is not None:
+            self.set_output(handle, 0, value)
+        return handle
 
     def connect(self, from_node, from_socket, to_node, to_socket):
         from_alias = self._coerce_alias(from_node)
@@ -329,6 +339,15 @@ class MaterialGraphProgram:
         alias = self._coerce_alias(node_handle)
         spec = self._get_or_create_patch_spec(alias)
         spec.property_values[property_name] = value
+
+    def set_output(self, node_handle, socket_name, value):
+        spec = self._get_or_create_patch_spec(self._coerce_alias(node_handle))
+        spec.output_values[socket_name] = value
+
+    def set_color_ramp(self, node_handle, stops, interpolation="LINEAR", color_mode="RGB", hue_interpolation="NEAR"):
+        spec = self._get_or_create_patch_spec(self._coerce_alias(node_handle))
+        spec.color_ramp = {"stops": stops, "interpolation": interpolation,
+                           "color_mode": color_mode, "hue_interpolation": hue_interpolation}
 
     def _get_or_create_patch_spec(self, alias):
         for spec in reversed(self.node_specs):
@@ -388,7 +407,7 @@ class MaterialGraphProgram:
 
     def ensure_locations(self):
         for spec in self.node_specs:
-            if spec.location is not None:
+            if spec.location is not None or spec.mode == "existing":
                 continue
             kind = self.NODE_KIND_BY_TYPE.get(spec.node_type, "utility")
             x_pos, y_pos = self.DEFAULT_LOCATIONS.get(kind, self.DEFAULT_LOCATIONS["utility"])
@@ -429,7 +448,6 @@ def _validate_graph_code(code_str):
 def _build_execution_env(program):
     return {
         "__builtins__": {},
-        "graph": program,
         "ResetMaterial": program.reset_material,
         "Existing": program.existing_node,
         "Node": program.node,
@@ -457,40 +475,26 @@ def _build_execution_env(program):
         "Link": program.connect,
         "SetInput": program.set_input,
         "SetProperty": program.set_property,
+        "SetOutput": program.set_output,
+        "SetColorRamp": program.set_color_ramp,
     }
 
 
 def _resolve_socket_name(sockets, desired_name):
-    socket = sockets.get(desired_name)
-    if socket:
-        return desired_name
-
-    normalized_desired = re.sub(r"[^a-z0-9]+", "", desired_name.lower())
-    for socket in sockets:
-        normalized_socket = re.sub(r"[^a-z0-9]+", "", socket.name.lower())
-        if normalized_socket == normalized_desired:
-            return socket.name
-
-    compatibility_aliases = {
-        "subsurface": ("Subsurface Weight", "Subsurface"),
-        "transmission": ("Transmission Weight", "Transmission"),
-        "coat": ("Coat Weight", "Coat"),
-        "sheen": ("Sheen Weight", "Sheen"),
-        "specular": ("Specular IOR Level", "Specular"),
-        "emission": ("Emission Color", "Emission"),
-    }
-    alias_candidates = compatibility_aliases.get(normalized_desired, ())
-    for candidate_name in alias_candidates:
-        socket = sockets.get(candidate_name)
-        if socket:
-            return candidate_name
-        normalized_candidate = re.sub(r"[^a-z0-9]+", "", candidate_name.lower())
-        for socket in sockets:
-            normalized_socket = re.sub(r"[^a-z0-9]+", "", socket.name.lower())
-            if normalized_socket == normalized_candidate:
-                return socket.name
-
-    raise GraphCodeValidationError(f"Socket '{desired_name}' was not found.")
+    # Integer indices disambiguate duplicate socket names (Math, MixShader, Mix).
+    if isinstance(desired_name, int):
+        if 0 <= desired_name < len(sockets):
+            return desired_name
+        raise GraphCodeValidationError(f"Socket index {desired_name} is out of range.")
+    for index, socket in enumerate(sockets):
+        if socket.identifier == desired_name:
+            return index
+    matches = [i for i, socket in enumerate(sockets) if socket.name == desired_name]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise GraphCodeValidationError(f"Ambiguous socket {desired_name!r}; use its index or identifier.")
+    raise GraphCodeValidationError(f"Socket {desired_name!r} was not found.")
 
 
 def _normalize_identifier(value):
@@ -572,6 +576,9 @@ def _apply_color_ramp(node, ramp_spec):
 
     stops = ramp_spec.get("stops") or []
     color_ramp = node.color_ramp
+    for key in ("interpolation", "color_mode", "hue_interpolation"):
+        if key in ramp_spec:
+            setattr(color_ramp, key, ramp_spec[key])
 
     while len(color_ramp.elements) > 1:
         color_ramp.elements.remove(color_ramp.elements[-1])
@@ -609,6 +616,8 @@ def _apply_spec_to_node(node_tree, node_cache, spec):
             raise GraphCodeValidationError(f"Existing node '{spec.name or spec.alias}' was not found.")
     elif spec.mode == "ensure":
         node = _resolve_existing_node(nodes, spec.name or spec.alias)
+        if node and node.bl_idname != spec.node_type:
+            raise GraphCodeValidationError(f"Existing node {node.name!r} has type {node.bl_idname}, expected {spec.node_type}.")
         if not node:
             node = nodes.new(spec.node_type)
     else:
@@ -622,21 +631,37 @@ def _apply_spec_to_node(node_tree, node_cache, spec):
         node.location = spec.location
 
     for property_name, value in spec.property_values.items():
-        if hasattr(node, property_name):
+        if property_name == "interpolation" and hasattr(node, "color_ramp"):
+            node.color_ramp.interpolation = value
+        elif property_name in {"node_tree", "image"}:
+            collection = bpy.data.node_groups if property_name == "node_tree" else bpy.data.images
+            datablock = collection.get(value) if isinstance(value, str) else None
+            if value is not None and datablock is None:
+                raise GraphCodeValidationError(f"Datablock {value!r} was not found.")
+            setattr(node, property_name, datablock)
+        else:
+            prop = node.bl_rna.properties.get(property_name)
+            if not prop or prop.is_readonly or prop.type not in {"BOOLEAN", "INT", "FLOAT", "STRING", "ENUM"}:
+                raise GraphCodeValidationError(f"Unsupported writable property: {property_name!r}")
             setattr(node, property_name, value)
 
     for socket_name, value in spec.input_values.items():
         if isinstance(value, NodeHandle):
             continue
         if _set_writable_socket_value(node.inputs, socket_name, value):
-            continue
-        if _set_writable_socket_value(node.outputs, socket_name, value):
+            socket = node.inputs[_resolve_socket_name(node.inputs, socket_name)]
+            for old_link in list(socket.links):
+                node_tree.links.remove(old_link)
             continue
         raise GraphCodeValidationError(
-            f"Socket '{socket_name}' was not found as a writable input or output on node '{node.name}'."
+            f"Socket '{socket_name}' was not found as a writable input on node '{node.name}'."
         )
 
-    if spec.node_type == "ShaderNodeValToRGB":
+    for socket_name, value in spec.output_values.items():
+        if not _set_writable_socket_value(node.outputs, socket_name, value):
+            raise GraphCodeValidationError(f"Output {socket_name!r} is not writable on {node.name!r}.")
+
+    if node.bl_idname == "ShaderNodeValToRGB":
         _apply_color_ramp(node, spec.color_ramp)
 
     node_cache[spec.alias] = node
@@ -657,7 +682,7 @@ def _apply_links(node_tree, node_cache, program):
             if not source_node:
                 raise GraphCodeValidationError(f"Source node alias '{value.alias}' is missing.")
 
-            source_socket_name = source_node.outputs[0].name
+            source_socket_name = 0
             target_socket_name = _resolve_socket_name(target_node.inputs, socket_name)
             target_socket = target_node.inputs[target_socket_name]
             for old_link in list(target_socket.links):
@@ -678,49 +703,57 @@ def _apply_links(node_tree, node_cache, program):
         links.new(from_node.outputs[from_socket_name], target_socket)
 
 
-def execute_generated_code(code_str, material_name):
-    import bpy
+def _node_tree_has_group(node_tree):
+    return any(node.bl_idname == "ShaderNodeGroup" for node in node_tree.nodes)
 
-    material = bpy.data.materials.get(material_name)
-    if not material:
-        print(f"Error: Material '{material_name}' not found!")
-        return False
 
-    if not material.use_nodes:
-        material.use_nodes = True
-
+def compile_graph_code(code_str):
+    if not isinstance(code_str, str) or not code_str.strip():
+        raise GraphCodeValidationError("Graph Code must be a non-empty string.")
+    if len(code_str.encode("utf-8")) > 1024 * 1024:
+        raise GraphCodeValidationError("Graph Code exceeds 1 MiB.")
     _validate_graph_code(code_str)
-
     program = MaterialGraphProgram()
-    execution_env = _build_execution_env(program)
-
+    env = _build_execution_env(program)
+    allowed = set(env) - {"__builtins__"}
+    tree = ast.parse(code_str)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and (not isinstance(node.func, ast.Name) or node.func.id not in allowed):
+            raise GraphCodeValidationError("Only Graph Code DSL calls are allowed.")
+        if isinstance(node, ast.Name) and (node.id.startswith("_") or isinstance(node.ctx, ast.Store) and node.id in allowed):
+            raise GraphCodeValidationError(f"Reserved variable name: {node.id}")
+        if isinstance(node, ast.keyword) and node.arg is None:
+            raise GraphCodeValidationError("Keyword expansion is not allowed.")
     try:
-        exec(code_str, execution_env, {})
+        exec(compile(tree, "<Graph Code>", "exec"), env, {})
     except Exception as exc:
-        print(f"Graph Code runtime error: {exc}")
-        import traceback
-        traceback.print_exc()
-        return False
-
+        raise GraphCodeValidationError(f"Graph Code compile error: {exc}") from exc
+    aliases = [spec.alias for spec in program.node_specs]
+    if len(aliases) != len(set(aliases)):
+        raise GraphCodeValidationError("Node aliases must be unique.")
     program.ensure_locations()
+    return program
 
+
+def apply_program(program, material, allow_reset=False):
+    if program.clear_requested and not allow_reset:
+        raise GraphCodeValidationError("ResetMaterial() requires allow_reset=true.")
+    material.use_nodes = True
     node_tree = material.node_tree
-    nodes = node_tree.nodes
-
     if program.clear_requested:
-        nodes.clear()
+        node_tree.nodes.clear()
+    cache = {}
+    for spec in program.node_specs:
+        _apply_spec_to_node(node_tree, cache, spec)
+    _apply_links(node_tree, cache, program)
+    node_tree.nodes.update()
 
-    node_cache = {}
 
+def preflight(program, material, allow_reset=False):
+    import bpy
+    candidate = material.copy()
     try:
-        for spec in program.node_specs:
-            _apply_spec_to_node(node_tree, node_cache, spec)
-
-        _apply_links(node_tree, node_cache, program)
-        node_tree.nodes.update()
-        return True
-    except Exception as exc:
-        print(f"Graph Code execution error: {exc}")
-        import traceback
-        traceback.print_exc()
-        return False
+        apply_program(program, candidate, allow_reset)
+        return {"nodes": len(candidate.node_tree.nodes), "links": len(candidate.node_tree.links)}
+    finally:
+        bpy.data.materials.remove(candidate)

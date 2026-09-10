@@ -1,119 +1,60 @@
+"""Persistent Graph Code source; reads never bootstrap or overwrite source."""
+import hashlib
 import os
+from pathlib import Path
 import re
+import tempfile
 
 import bpy
 
 
-DEFAULT_GRAPH_CODE = """# Material Graph Code
-ResetMaterial()
-
-output = OutputMaterial()
-surface = PrincipledBSDF(
-    alias="surface",
-    base_color=(0.8, 0.8, 0.8, 1.0),
-    roughness=0.5,
-)
-Link(surface, "BSDF", output, "Surface")
-"""
-
-
-def _safe_name(value):
-    safe = re.sub(r"[^a-zA-Z0-9._-]+", "_", value.strip())
-    safe = safe.strip("._")
-    return safe or "material"
-
-
-def _get_addon_preferences():
-    addon_name = __package__.split(".")[0]
-    addon = bpy.context.preferences.addons.get(addon_name)
-    return addon.preferences if addon else None
-
-
 def get_graph_code_root():
-    prefs = _get_addon_preferences()
-    if prefs and getattr(prefs, "graph_code_root", "").strip():
-        return bpy.path.abspath(prefs.graph_code_root)
-
+    addon = bpy.context.preferences.addons.get(__package__)
+    root = addon.preferences.graph_code_root if addon else ""
+    if root.strip():
+        return Path(bpy.path.abspath(root))
     if bpy.data.filepath:
-        blend_dir = os.path.dirname(bpy.data.filepath)
-        return os.path.join(blend_dir, "blender_copilot_graphs")
-
-    return os.path.join(os.path.dirname(__file__), "_material_graphs")
+        return Path(bpy.data.filepath).parent / "blender_copilot_graphs"
+    return Path.home() / ".blender-copilot" / "graphs"
 
 
 def get_material_graph_path(material):
-    bound_path = getattr(material, "copilot_graph_code_path", "").strip()
-    if bound_path:
-        return bpy.path.abspath(bound_path)
-
-    filename = f"{_safe_name(material.name)}.py"
-    return os.path.join(get_graph_code_root(), filename)
-
-
-def bind_material_graph(material):
-    path = get_material_graph_path(material)
-    material.copilot_graph_code_path = path
-    return path
-
-
-def _bootstrap_from_existing_material(material):
-    lines = [
-        f"# Material Graph Code for {material.name}",
-        "# Bootstrapped from the current Blender material.",
-        "# Use Existing(...) to modify the current graph, or ResetMaterial() to replace it.",
-        "",
-    ]
-
-    nodes = material.node_tree.nodes if material.use_nodes and material.node_tree else None
-    if not nodes:
-        lines.append(DEFAULT_GRAPH_CODE.strip())
-        return "\n".join(lines) + "\n"
-
-    output = nodes.get("Material Output")
-    principled = nodes.get("Principled BSDF")
-
-    if output:
-        lines.append('output = Existing("Material Output", alias="output")')
-    if principled:
-        lines.append('surface = Existing("Principled BSDF", alias="surface")')
-        lines.append("")
-        lines.append("# Example edits:")
-        lines.append('# SetInput(surface, "Base Color", (0.8, 0.4, 0.2, 1.0))')
-        lines.append('# SetInput(surface, "Roughness", 0.6)')
-    else:
-        lines.append(DEFAULT_GRAPH_CODE.strip())
-
-    return "\n".join(lines).strip() + "\n"
-
-
-def ensure_material_graph_file(material):
-    path = bind_material_graph(material)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-
-    if not os.path.exists(path):
-        initial_code = _bootstrap_from_existing_material(material)
-        with open(path, "w", encoding="utf-8") as file:
-            file.write(initial_code)
-
-    return path
+    bound = getattr(material, "copilot_graph_code_path", "").strip()
+    if bound:
+        return Path(bpy.path.abspath(bound))
+    safe = re.sub(r"[^a-zA-Z0-9._-]+", "_", material.name).strip("._") or "material"
+    digest = hashlib.sha256(material.name.encode()).hexdigest()[:12]
+    return get_graph_code_root() / f"{safe}-{digest}.py"
 
 
 def read_material_graph(material):
-    path = ensure_material_graph_file(material)
-    with open(path, "r", encoding="utf-8") as file:
-        return file.read()
+    path = get_material_graph_path(material)
+    return path.read_text(encoding="utf-8") if path.exists() else None
 
 
-def write_material_graph(material, code_str):
-    path = ensure_material_graph_file(material)
-    with open(path, "w", encoding="utf-8") as file:
-        file.write(code_str.rstrip() + "\n")
-    return path
+def atomic_write(path, code):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(code.rstrip() + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
-def write_material_graph_draft(material, code_str):
-    path = ensure_material_graph_file(material)
-    draft_path = path + ".draft.py"
-    with open(draft_path, "w", encoding="utf-8") as file:
-        file.write(code_str.rstrip() + "\n")
-    return draft_path
+def write_material_graph(material, code):
+    path = get_material_graph_path(material)
+    atomic_write(path, code)
+    material.copilot_graph_code_path = str(path)
+    return str(path)
+
+
+def write_material_graph_draft(material, code):
+    path = Path(str(get_material_graph_path(material)) + ".draft.py")
+    atomic_write(path, code)
+    return str(path)

@@ -1,77 +1,115 @@
 # Blender Copilot
 
-**让 LLM 帮你写蓝图！**
-Blender Copilot 是一个基于大语言模型（LLM）的 Blender 插件，允许用户通过自然语言生成和修改 Shader（着色器）节点蓝图。
+**让你的 AI agent 通过 Graph Code 创建和编辑 Blender 材质。**
 
-https://github.com/user-attachments/assets/8a3fbff1-ee19-4a87-a3c0-83d6744830aa
+在 Codex 等支持 MCP 的 agent 中描述材质需求，Blender Copilot 将可编辑的 Graph Code 转换成 Shader 节点。你也可以读取已有材质，继续调整颜色、纹理、参数与连接。
 
-<img width="2559" height="1491" alt="image" src="https://github.com/user-attachments/assets/12bc23ea-a463-43ad-a9ec-876dec358331" />
+![通过 Graph Code 生成的风化铜与铜锈材质](imgs/image-copper-shader.png)
 
-> ⚠️ **注意 / Note**
+上图示例使用 19 个节点、27 条连接，组合金属露底、青绿色氧化层、粗糙度变化和多层凹凸。查看 [完整 Graph Code](examples/weathered_copper.py)。
 
-> 目前本项目处于 **实验阶段 (Experimental)**。
-> 建议 Blender **4.2** 版本。
+## 从代码到材质
 
-## ✨ 功能特性 (Features)
+Graph Code 是 Python 风格的材质描述语言。Agent 负责理解需求和编写代码，插件负责读取节点图、校验代码并将修改应用到 Blender。
 
-- **文本生成节点**: 输入 "创建一个生锈的黄金材质"，自动生成节点网络。
-- **上下文感知修改**: 支持基于现有节点进行修改（例如："把刚才的纹理改得更粗糙一点"）。
-- **多模型支持**: 兼容 OpenAI 格式接口，支持 **DeepSeek** (推荐)、OpenAI、Kimi、本地 Ollama 等模型。
+![可编辑的材质 Graph Code](imgs/image-graph-code.png)
 
-## 📸 效果展示 (Gallery)
+同一份代码在 Blender 中生成可继续编辑的 Shader 节点图：
 
-### 一键生成材质
-![生成示例1](imgs/img_2.png)
+![Graph Code 对应的 Shader 节点图](imgs/image-copper-shader-blue-print.png)
 
-### 基于现有节点修改
-通过读取当前节点树的上下文，AI 可以理解并修改现有的连接。
-![修改1](imgs/img_3.png)
-![修改2](imgs/img_4.png)
+- **创建材质**：从自然语言需求生成程序化材质。
+- **修改已有图**：读取当前节点与参数，保留已有节点继续编辑。
+- **应用前校验**：在临时材质副本上检查节点、socket 和参数。
+- **保留源码**：Graph Code 保存为文本文件，便于编辑与版本管理。
+- **插件直接接入 agent**：内置 HTTP MCP，无需额外安装 Python 或运行独立服务。
 
-## 🛠️ 安装与配置 (Installation)
+## 快速开始
 
-1. **下载**: 在 Releases 页面下载最新的 `.zip` 压缩包。
-2. **安装**: 打开 Blender -> `Edit` -> `Preferences` -> `Add-ons` -> `Install...`，选择压缩包安装。
-3. **配置**: 
-   - 在插件设置面板中，填入你的 LLM 配置。
-   - **配置示例 (DeepSeek)**:
-     - API URL: `https://api.deepseek.com/chat/completions`
-     - Model: `deepseek-chat`
-     - API Key: `sk-xxxx`
+需要 **Blender 5.2.x** 和支持 **MCP Streamable HTTP** 的本地 agent。当前验证平台为 Windows；其他平台尚未完成验证。
 
-## 🚀 使用方法 (Usage)
+### 1. 下载并安装
 
-1. 打开 **着色器编辑器 (Shader Editor)**。
-2. 按 `N` 键打开侧边栏，找到 **AI Copilot** 标签页。
-3. 在输入框中描述你想要的材质效果。
-4. 点击 **Generate**。
+从 [Releases](https://github.com/entropy622/blender_copilot/releases) 下载 `blender_copilot-<version>.zip`。
 
-![使用截图](imgs/img_1.png)
+在 Blender 中打开 **Edit → Preferences → Add-ons → Install from Disk**，选择 ZIP 并启用 **Blender Copilot — Graph Code Tools**。
 
-## 💡 最佳实践与建议 (Tips)
+启用插件后，MCP 服务自动运行；禁用插件或关闭 Blender 后停止。升级旧版时建议安装后重启 Blender。
 
-* **辅助插件**: 建议搭配 **Node Arrange** 插件使用。用于自动排版LLM生成出的节点。
+### 2. 配置 agent
 
+在插件偏好设置中点击 **Copy Codex Config** 或 **Copy MCP JSON**，将复制的配置加入 agent 的 MCP 设置。
 
-## 📄 License
+Codex 配置形式如下，实际地址与 token 以插件复制的内容为准：
 
-MIT License
+```toml
+[mcp_servers.blender_graph]
+url = "http://127.0.0.1:9877/mcp"
+http_headers = { Authorization = "Bearer <插件生成的 token>" }
+tool_timeout_sec = 45
+```
 
-## 蓝图生成链路
+重新加载 agent 的 MCP 配置，调用 `blender_status` 确认连接。Blender 与 agent 应运行在同一台电脑；远程云端 agent 无法直接访问此本地地址。
 
-生成蓝图时，插件会把当前蓝图抓换为 Graph Code 格式（类python 文件），保存在磁盘中。便于LLM去修改。修改完后，插件会把Graph Code再映射回蓝图。
+### 3. 描述材质
 
-<img width="1712" height="1064" alt="image" src="https://github.com/user-attachments/assets/d9a59e6e-0e23-4e34-8937-6d032733aa47" />
+> 查看当前材质，为它生成风化铜效果，带青绿色铜锈、金属露底和细小蚀坑。先校验 Graph Code，再应用并读取结果。
 
+> 保留当前节点组，把表面粗糙度调到 0.55，让铜锈颜色更深一些。
 
-1. 用户在 Blender 的 Shader Editor 中选中当前材质并输入自然语言描述。
-2. 插件先为该材质绑定一个持久化的 Graph Code 文件；如果文件不存在，会自动创建一个初始 `.py` 文件。
-3. 插件收集当前材质上下文，包括主输出链、现有节点摘要、当前 Graph Code 文件路径和当前 Graph Code 内容。
-4. 这些上下文连同用户输入一起发送给 LLM，请它返回“完整更新后的 Material Graph Code”。
-5. 本地执行器会先校验这段 Graph Code 的语法和允许的调用，再把它编译成 Blender 材质节点、参数和连线。
-6. 执行成功后，新的 Graph Code 会写回持久化 `.py` 文件；执行失败时，会把失败版本保存为同目录下的 `.draft.py` 便于排查。
-7. Blender 中看到的节点树是运行结果，Graph Code 文件是可继续编辑、版本管理和回放的源码表示。
+Blender 内无需填写模型名称或 API Key，对话与模型配置由你选择的 agent 管理。
 
-Graph Code 语法说明见 [doc/material-graph-code.md](doc/material-graph-code.md)。
+## Graph Code 示例
 
-这个思路参考自 https://github.com/AyayaXiaowang/Ayaya_Miliastra_Editor
+```python
+ResetMaterial()
+output = OutputMaterial()
+surface = PrincipledBSDF(
+    base_color=(0.65, 0.27, 0.10, 1.0),
+    metallic=0.95,
+    roughness=0.32,
+)
+Link(surface, "BSDF", output, "Surface")
+```
+
+修改已有节点：
+
+```python
+surface = Existing("Principled BSDF")
+SetInput(surface, "Roughness", 0.55)
+```
+
+Graph Code 是受限 DSL，不执行任意 Python。完整语法见 [Graph Code 文档](doc/material-graph-code.md)。
+
+## 可用工具
+
+| 工具 | 用途 |
+| --- | --- |
+| `blender_status` | 查看 Blender 状态和支持的 Graph Code 函数 |
+| `list_materials` | 列出材质与对象绑定 |
+| `get_material_graph` | 读取实时图、Graph Code、已保存源码和 revision |
+| `get_node_schema` | 查询节点 socket、属性和枚举 |
+| `validate_graph_code` | 在临时副本上检查代码 |
+| `apply_graph_code` | 检查 revision，校验并应用代码 |
+| `create_material` | 创建材质，可追加到指定对象的材质槽 |
+
+推荐流程：**读取 → 编写 → 校验 → 应用 → 回读确认**。
+
+## 使用说明
+
+- 实时图导出使用 `Existing(...)`，适合继续编辑同一材质。它依赖现有节点，并不打包节点组内部、外部图像、动画或驱动。
+- 需要从空材质重建时，应保留完整构造代码；对已有材质执行 `ResetMaterial()` 需要 `allow_reset=true`。
+- 默认源码存于 `.blend` 同目录的 `blender_copilot_graphs/`，未保存场景时使用用户目录。可在插件设置中修改。
+- 工具不会自动保存 `.blend`。创建材质时追加材质槽，已有面的材质分配由 Blender 管理。
+- 服务仅监听本机回环地址，使用本地 token 验证访问。不要将含 token 的个人配置提交到公开仓库。
+
+## 文档
+
+- [连接、升级与排错](doc/connection.md)
+- [Graph Code 语法与转换边界](doc/material-graph-code.md)
+- [开发、测试与打包](doc/development.md)
+- [旧版 README](README.legacy.md)
+
+Graph Code 思路参考 [Ayaya_Miliastra_Editor](https://github.com/AyayaXiaowang/Ayaya_Miliastra_Editor)。
+
+[MIT License](LICENSE)
