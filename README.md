@@ -2,7 +2,7 @@
 
 **让你的 AI agent 通过 Graph Code 创建和编辑 Blender 材质。**
 
-在 Codex 等支持 MCP 的 agent 中描述材质需求，Blender Copilot 将可编辑的 Graph Code 转换成 Shader 节点。你也可以读取已有材质，继续调整颜色、纹理、参数与连接。
+在 Codex 等支持 MCP 的 agent 中描述材质需求，Blender Copilot 将任意材质转化为可编辑的 Graph Code 文本, 让LLM通过文本编辑的方式创建或编辑蓝图.
 
 ![通过 Graph Code 生成的风化铜与铜锈材质](imgs/image-copper-shader.png)
 
